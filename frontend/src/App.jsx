@@ -16,6 +16,7 @@ import {
   FinanceView,
   PeopleView,
 } from './ErpModules';
+import ModuleSettings from './ModuleSettings';
 
 const money = new Intl.NumberFormat('es-HN', { style: 'currency', currency: 'HNL' });
 const queryMode = new URLSearchParams(window.location.search).get('mode');
@@ -44,6 +45,7 @@ const labels = {
   people: 'Personal',
   automation: 'Automatización',
   analytics: 'Analítica',
+  modules: 'Módulos ERP',
   admin: 'Usuarios y dispositivos',
 };
 
@@ -109,17 +111,17 @@ function App() {
   const [view, setView] = useState(initialView);
   const refresh = async () => { const [meData, productData, stockData] = await Promise.all([api.request('/me'), api.request('/products'), api.request('/inventory')]); setMe(meData); setProducts(productData); setInventory(stockData); };
   useEffect(() => { if (api.token) refresh().catch(() => api.setToken('')).finally(() => setLoading(false)); }, []);
-  const fullViews = ['home', 'analytics', 'pos', 'products', 'inventory', 'cash', 'customers', 'crm', 'suppliers', 'purchases', 'transfers', 'deliveries', 'finance', 'accounting', 'people', 'automation', 'admin'];
+  const fullViews = ['home', 'analytics', 'pos', 'products', 'inventory', 'cash', 'customers', 'crm', 'suppliers', 'purchases', 'transfers', 'deliveries', 'finance', 'accounting', 'people', 'automation', 'modules', 'admin'];
   const allowed = useMemo(() => queryMode && roleViews[queryMode] ? roleViews[queryMode] : fullViews, []);
   if (loading) return <main className="center">Cargando Mily Zebra…</main>;
   if (!me) return <Login onReady={() => refresh().then(() => setView(initialView))} />;
   const managementOnly = new Set(['analytics', 'finance', 'accounting', 'people', 'automation']);
   const nav = allowed.filter((item) => {
-    if (item === 'admin' && !['owner', 'admin'].includes(me.role)) return false;
+    if (['admin', 'modules'].includes(item) && !['owner', 'admin'].includes(me.role)) return false;
     if (managementOnly.has(item) && !['owner', 'admin', 'manager', 'auditor'].includes(me.role)) return false;
     return true;
   });
-  return <div className="app-shell"><aside className="sidebar"><div className="logo"><span>MZ</span><div><strong>Mily Zebra</strong><small>Commerce OS</small></div></div><nav>{nav.map((item) => <button key={item} className={view === item ? 'active' : ''} onClick={() => setView(item)}>{labels[item]}</button>)}</nav><div className="user-card"><strong>{me.full_name}</strong><small>{me.role}</small><button className="link" onClick={() => { api.setToken(''); location.reload(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Roatán · operación en vivo</p><h1>{labels[view] || 'Mily Zebra'}</h1></div><div className="status"><i /> API conectada</div></header>{view === 'home' && <div className="dashboard"><article><small>Productos</small><strong>{products.length}</strong><span>catálogo activo</span></article><article><small>Unidades visibles</small><strong>{inventory.reduce((sum, row) => sum + Number(row.quantity), 0)}</strong><span>en inventario</span></article><article><small>Modo</small><strong>{queryMode || 'completo'}</strong><span>{me.role}</span></article></div>}{view === 'analytics' && <AnalyticsView />}{view === 'pos' && <Pos products={products} refresh={refresh} />}{view === 'products' && <section className="panel"><div className="panel-title"><div><p className="eyebrow">Catálogo</p><h2>Nuevo producto</h2></div></div><ProductForm onSaved={refresh} /><div className="product-list">{products.map((p) => <div key={p.id}><span><strong>{p.name}</strong><small>{p.sku} · {p.category}</small></span><b>{money.format(Number(p.sale_price))}</b></div>)}</div></section>}{view === 'inventory' && <Inventory rows={inventory} products={products} refresh={refresh} />}{view === 'cash' && <Cash />}{view === 'customers' && <CustomersView />}{view === 'crm' && <CrmView />}{view === 'suppliers' && <SuppliersView />}{view === 'purchases' && <PurchasesView products={products} refreshInventory={refresh} />}{view === 'transfers' && <TransfersView products={products} refreshInventory={refresh} />}{view === 'deliveries' && <DeliveriesView me={me} />}{view === 'finance' && <FinanceView />}{view === 'accounting' && <AccountingView />}{view === 'people' && <PeopleView />}{view === 'automation' && <AutomationView />}{view === 'admin' && <UsersDevicesView />}</main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="logo"><span>MZ</span><div><strong>Mily Zebra</strong><small>Commerce OS</small></div></div><nav>{nav.map((item) => <button key={item} className={view === item ? 'active' : ''} onClick={() => setView(item)}>{labels[item]}</button>)}</nav><div className="user-card"><strong>{me.full_name}</strong><small>{me.role}</small><button className="link" onClick={() => { api.setToken(''); location.reload(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Roatán · operación en vivo</p><h1>{labels[view] || 'Mily Zebra'}</h1></div><div className="status"><i /> API conectada</div></header>{view === 'home' && <div className="dashboard"><article><small>Productos</small><strong>{products.length}</strong><span>catálogo activo</span></article><article><small>Unidades visibles</small><strong>{inventory.reduce((sum, row) => sum + Number(row.quantity), 0)}</strong><span>en inventario</span></article><article><small>Modo</small><strong>{queryMode || 'completo'}</strong><span>{me.role}</span></article></div>}{view === 'analytics' && <AnalyticsView />}{view === 'pos' && <Pos products={products} refresh={refresh} />}{view === 'products' && <section className="panel"><div className="panel-title"><div><p className="eyebrow">Catálogo</p><h2>Nuevo producto</h2></div></div><ProductForm onSaved={refresh} /><div className="product-list">{products.map((p) => <div key={p.id}><span><strong>{p.name}</strong><small>{p.sku} · {p.category}</small></span><b>{money.format(Number(p.sale_price))}</b></div>)}</div></section>}{view === 'inventory' && <Inventory rows={inventory} products={products} refresh={refresh} />}{view === 'cash' && <Cash />}{view === 'customers' && <CustomersView />}{view === 'crm' && <CrmView />}{view === 'suppliers' && <SuppliersView />}{view === 'purchases' && <PurchasesView products={products} refreshInventory={refresh} />}{view === 'transfers' && <TransfersView products={products} refreshInventory={refresh} />}{view === 'deliveries' && <DeliveriesView me={me} />}{view === 'finance' && <FinanceView />}{view === 'accounting' && <AccountingView />}{view === 'people' && <PeopleView />}{view === 'automation' && <AutomationView />}{view === 'modules' && <ModuleSettings />}{view === 'admin' && <UsersDevicesView />}</main></div>;
 }
 
 export default App;
