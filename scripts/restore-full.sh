@@ -19,10 +19,12 @@ fi
 set -a
 source .env
 set +a
+TARGET_DB="$POSTGRES_DB"
+TARGET_USER="$POSTGRES_USER"
 
-if [[ "${MZ_RESTORE_CONFIRM:-}" != "RESTORE_${POSTGRES_DB}" ]]; then
+if [[ "${MZ_RESTORE_CONFIRM:-}" != "RESTORE_${TARGET_DB}" ]]; then
   echo "Restauración bloqueada para evitar borrado accidental." >&2
-  echo "Use MZ_RESTORE_CONFIRM=RESTORE_${POSTGRES_DB}" >&2
+  echo "Use MZ_RESTORE_CONFIRM=RESTORE_${TARGET_DB}" >&2
   exit 3
 fi
 
@@ -44,8 +46,8 @@ if [[ "${MZ_BACKUP_FORMAT:-}" != "2" ]]; then
   echo "Formato de backup no soportado" >&2
   exit 4
 fi
-if [[ "${POSTGRES_DB:-}" != "$(grep '^POSTGRES_DB=' .env | cut -d= -f2-)" ]]; then
-  echo "El backup corresponde a otra base de datos" >&2
+if [[ "${POSTGRES_DB:-}" != "$TARGET_DB" ]]; then
+  echo "El backup corresponde a otra base de datos: ${POSTGRES_DB:-desconocida}" >&2
   exit 4
 fi
 
@@ -53,15 +55,15 @@ echo "Deteniendo servicios que escriben datos..."
 docker compose stop worker api web
 
 echo "Recreando PostgreSQL..."
-docker compose exec -T db psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 <<SQL
-SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${POSTGRES_DB}' AND pid <> pg_backend_pid();
-DROP DATABASE IF EXISTS "${POSTGRES_DB}";
-CREATE DATABASE "${POSTGRES_DB}" OWNER "${POSTGRES_USER}";
+docker compose exec -T db psql -U "$TARGET_USER" -d postgres -v ON_ERROR_STOP=1 <<SQL
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${TARGET_DB}' AND pid <> pg_backend_pid();
+DROP DATABASE IF EXISTS "${TARGET_DB}";
+CREATE DATABASE "${TARGET_DB}" OWNER "${TARGET_USER}";
 SQL
 
 docker compose exec -T db pg_restore \
-  --username "$POSTGRES_USER" \
-  --dbname "$POSTGRES_DB" \
+  --username "$TARGET_USER" \
+  --dbname "$TARGET_DB" \
   --no-owner \
   --no-privileges \
   --exit-on-error < "$WORK/database.dump"
@@ -72,7 +74,7 @@ cat "$WORK/media.tar.gz" | docker compose run --rm --no-deps -T --entrypoint sh 
 docker compose up -d api worker web
 
 echo "Verificando migración y salud..."
-docker compose exec -T api alembic current
+docker compose exec -T api alembic current | grep -F "${ALEMBIC_HEAD}"
 for attempt in $(seq 1 30); do
   if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
     echo "Restauración completa verificada."
