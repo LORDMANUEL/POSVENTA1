@@ -10,6 +10,7 @@ export default function ReturnsView({ refreshInventory }) {
   const [detail, setDetail] = useState(null);
   const [quantities, setQuantities] = useState({});
   const [reason, setReason] = useState('Cambio solicitado por cliente');
+  const [returnKey, setReturnKey] = useState(() => crypto.randomUUID());
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -45,8 +46,10 @@ export default function ReturnsView({ refreshInventory }) {
     try {
       const result = await api.request('/post-sales/returns', {
         method: 'POST',
+        headers: { 'Idempotency-Key': returnKey },
         body: JSON.stringify({ sale_id: saleId, reason, lines }),
       });
+      setReturnKey(crypto.randomUUID());
       setMessage(`Devolución registrada por ${money.format(Number(result.total))}. Reembolso: ${result.refund.status}.`);
       await Promise.all([loadDetail(saleId), loadLists(), refreshInventory?.()]);
     } catch (err) {
