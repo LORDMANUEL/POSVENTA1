@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .accounting_integration import AccountingIntegrationService
 from .commerce_models import (
     Order,
     OrderLine,
@@ -432,6 +433,7 @@ def mark_order_paid(
     payment.external_reference = payload.external_reference
     if order.status == OrderStatus.PENDING_PAYMENT:
         order.status = OrderStatus.CONFIRMED
+    AccountingIntegrationService.post_order_revenue(db, user, order, payment.method)
     AuditService.record(
         db,
         user,
@@ -508,6 +510,7 @@ def fulfill_order(
         )
         reservation.status = ReservationStatus.CONSUMED
     order.status = OrderStatus.FULFILLED
+    AccountingIntegrationService.post_order_cogs(db, user, order)
     AuditService.record(
         db,
         user,

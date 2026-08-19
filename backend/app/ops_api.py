@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .accounting_integration import AccountingIntegrationService
 from .db import get_db
 from .integrity import require_branch_scope
 from .models import Product, Sale, User, UserRole
@@ -374,6 +375,7 @@ def receive_purchase(
         )
     purchase.status = PurchaseStatus.RECEIVED
     purchase.received_at = datetime.now(timezone.utc)
+    AccountingIntegrationService.post_purchase_receipt(db, user, purchase)
     AuditService.record(db, user, "purchase.received", "purchase_order", purchase.id)
     db.commit()
     return {"id": purchase.id, "status": purchase.status.value}
