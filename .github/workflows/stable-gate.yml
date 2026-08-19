@@ -10,6 +10,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: stable-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   stable_e2e:
     runs-on: ubuntu-latest
