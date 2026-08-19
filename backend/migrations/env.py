@@ -25,6 +25,7 @@ from app import (  # noqa: F401,E402
     module_registry,
     ops_models,
     people_models,
+    platform_models,
     post_sale_models,
 )
 
