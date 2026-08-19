@@ -40,12 +40,19 @@ export function removeOfflineSale(idempotencyKey) {
 }
 
 export async function syncOfflineSales(api) {
-  if (!navigator.onLine) return { synced: 0, pending: readQueue().length, needsAttention: 0 };
   const items = readQueue();
+  if (!navigator.onLine) {
+    return {
+      synced: 0,
+      pending: items.filter((item) => item.status === 'pending').length,
+      needsAttention: items.filter((item) => item.status === 'needs_attention').length,
+    };
+  }
+
   let synced = 0;
   const next = [];
-
-  for (const item of items) {
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
     if (item.status === 'needs_attention') {
       next.push(item);
       continue;
@@ -61,20 +68,15 @@ export async function syncOfflineSales(api) {
       const attempts = Number(item.attempts || 0) + 1;
       if (error?.network || error?.status === 0) {
         next.push({ ...item, attempts, status: 'pending', lastError: error.message });
+        next.push(...items.slice(index + 1));
         break;
       }
-      next.push({ ...item, attempts, status: 'needs_attention', lastError: error?.message || 'Error de sincronización' });
-    }
-  }
-
-  // Preserve any entries after the first network failure that were not iterated.
-  if (next.length + synced < items.length) {
-    const processedKeys = new Set([...next.map((item) => item.idempotencyKey)]);
-    let successfulToSkip = synced;
-    for (const item of items) {
-      if (processedKeys.has(item.idempotencyKey)) continue;
-      if (successfulToSkip > 0) { successfulToSkip -= 1; continue; }
-      next.push(item);
+      next.push({
+        ...item,
+        attempts,
+        status: 'needs_attention',
+        lastError: error?.message || 'Error de sincronización',
+      });
     }
   }
 
@@ -87,6 +89,8 @@ export async function syncOfflineSales(api) {
 }
 
 export function retryOfflineSale(idempotencyKey) {
-  const items = readQueue().map((item) => item.idempotencyKey === idempotencyKey ? { ...item, status: 'pending', lastError: null } : item);
+  const items = readQueue().map((item) => item.idempotencyKey === idempotencyKey
+    ? { ...item, status: 'pending', lastError: null }
+    : item);
   writeQueue(items);
 }
