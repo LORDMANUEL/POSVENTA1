@@ -4,6 +4,7 @@ import App from './App';
 import Storefront from './Storefront';
 import './styles.css';
 import './operations.css';
+import './module-settings.css';
 import './storefront.css';
 import './storefront-media.css';
 
