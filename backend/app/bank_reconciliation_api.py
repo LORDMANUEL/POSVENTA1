@@ -3,6 +3,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import get_db
@@ -26,7 +27,9 @@ class MatchIn(BaseModel):
 
 def _candidate(db: Session, tenant_id: str, matched_type: str, matched_id: str):
     model = ReceivablePayment if matched_type == "receivable_payment" else PayablePayment
-    row = db.scalar(select(model).where(model.id == matched_id, model.tenant_id == tenant_id))
+    row = db.scalar(
+        select(model).where(model.id == matched_id, model.tenant_id == tenant_id)
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Movimiento interno no encontrado")
     return row
@@ -35,7 +38,9 @@ def _candidate(db: Session, tenant_id: str, matched_type: str, matched_id: str):
 @reconciliation_router.get("/unmatched")
 def list_unmatched(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)
+    ),
 ) -> list[dict]:
     rows = db.scalars(
         select(BankTransaction)
@@ -43,7 +48,10 @@ def list_unmatched(
             BankTransaction.tenant_id == user.tenant_id,
             BankTransaction.reconciliation_status == "unmatched",
         )
-        .order_by(BankTransaction.transaction_date.desc(), BankTransaction.created_at.desc())
+        .order_by(
+            BankTransaction.transaction_date.desc(),
+            BankTransaction.created_at.desc(),
+        )
     ).all()
     return [
         {
@@ -63,7 +71,9 @@ def list_unmatched(
 def suggestions(
     bank_transaction_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)
+    ),
 ) -> list[dict]:
     tx = db.scalar(
         select(BankTransaction).where(
@@ -77,10 +87,13 @@ def suggestions(
     results: list[dict] = []
     if amount > 0:
         rows = db.scalars(
-            select(ReceivablePayment).where(
+            select(ReceivablePayment)
+            .where(
                 ReceivablePayment.tenant_id == user.tenant_id,
                 ReceivablePayment.amount == amount,
-            ).order_by(ReceivablePayment.paid_at.desc()).limit(20)
+            )
+            .order_by(ReceivablePayment.paid_at.desc())
+            .limit(20)
         ).all()
         results.extend(
             {
@@ -96,10 +109,13 @@ def suggestions(
     elif amount < 0:
         target = -amount
         rows = db.scalars(
-            select(PayablePayment).where(
+            select(PayablePayment)
+            .where(
                 PayablePayment.tenant_id == user.tenant_id,
                 PayablePayment.amount == target,
-            ).order_by(PayablePayment.paid_at.desc()).limit(20)
+            )
+            .order_by(PayablePayment.paid_at.desc())
+            .limit(20)
         ).all()
         results.extend(
             {
@@ -134,8 +150,16 @@ def match_transaction(
         raise HTTPException(status_code=404, detail="Movimiento bancario no encontrado")
     if tx.reconciliation_status == "matched":
         if tx.matched_type == payload.matched_type and tx.matched_id == payload.matched_id:
-            return {"id": tx.id, "status": tx.reconciliation_status, "matched_type": tx.matched_type, "matched_id": tx.matched_id}
-        raise HTTPException(status_code=409, detail="El movimiento ya está conciliado con otra operación")
+            return {
+                "id": tx.id,
+                "status": tx.reconciliation_status,
+                "matched_type": tx.matched_type,
+                "matched_id": tx.matched_id,
+            }
+        raise HTTPException(
+            status_code=409,
+            detail="El movimiento ya está conciliado con otra operación",
+        )
 
     candidate = _candidate(db, user.tenant_id, payload.matched_type, payload.matched_id)
     bank_amount = Decimal(tx.amount)
@@ -170,8 +194,20 @@ def match_transaction(
         tx.id,
         {"matched_type": payload.matched_type, "matched_id": payload.matched_id},
     )
-    db.commit()
-    return {"id": tx.id, "status": tx.reconciliation_status, "matched_type": tx.matched_type, "matched_id": tx.matched_id}
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="La operación interna ya fue conciliada por otra transacción",
+        ) from exc
+    return {
+        "id": tx.id,
+        "status": tx.reconciliation_status,
+        "matched_type": tx.matched_type,
+        "matched_id": tx.matched_id,
+    }
 
 
 @reconciliation_router.post("/{bank_transaction_id}/unmatch")
@@ -182,7 +218,10 @@ def unmatch_transaction(
 ) -> dict:
     tx = db.scalar(
         select(BankTransaction)
-        .where(BankTransaction.id == bank_transaction_id, BankTransaction.tenant_id == user.tenant_id)
+        .where(
+            BankTransaction.id == bank_transaction_id,
+            BankTransaction.tenant_id == user.tenant_id,
+        )
         .with_for_update()
     )
     if not tx:
@@ -191,6 +230,13 @@ def unmatch_transaction(
     tx.reconciliation_status = "unmatched"
     tx.matched_type = None
     tx.matched_id = None
-    AuditService.record(db, user, "bank_transaction.unmatched", "bank_transaction", tx.id, previous)
+    AuditService.record(
+        db,
+        user,
+        "bank_transaction.unmatched",
+        "bank_transaction",
+        tx.id,
+        previous,
+    )
     db.commit()
     return {"id": tx.id, "status": tx.reconciliation_status}

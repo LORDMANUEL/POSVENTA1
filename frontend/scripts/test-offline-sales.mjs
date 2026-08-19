@@ -13,17 +13,18 @@ Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, confi
 const {
   getOfflineSales,
   queueOfflineSale,
+  removeOfflineSale,
   retryOfflineSale,
   syncOfflineSales,
 } = await import('../src/offlineSales.js');
 
-queueOfflineSale({
+await queueOfflineSale({
   idempotencyKey: 'offline-sale-0001',
   total: 500,
   payload: { payment_method: 'cash', lines: [{ product_id: 'p1', quantity: 1 }] },
 });
-assert.equal(getOfflineSales().length, 1);
-assert.equal(getOfflineSales()[0].status, 'pending');
+assert.equal((await getOfflineSales()).length, 1);
+assert.equal((await getOfflineSales())[0].status, 'pending');
 
 let calls = 0;
 const successfulApi = {
@@ -37,9 +38,9 @@ Object.defineProperty(globalThis, 'navigator', { value: { onLine: true }, config
 const synced = await syncOfflineSales(successfulApi);
 assert.equal(synced.synced, 1);
 assert.equal(calls, 1);
-assert.equal(getOfflineSales().length, 0);
+assert.equal((await getOfflineSales()).length, 0);
 
-queueOfflineSale({
+await queueOfflineSale({
   idempotencyKey: 'offline-sale-0002',
   total: 700,
   payload: { payment_method: 'cash', lines: [{ product_id: 'p2', quantity: 2 }] },
@@ -54,11 +55,25 @@ const conflictApi = {
 };
 const conflict = await syncOfflineSales(conflictApi);
 assert.equal(conflict.needsAttention, 1);
-assert.equal(getOfflineSales()[0].status, 'needs_attention');
-assert.match(getOfflineSales()[0].lastError, /Stock insuficiente/);
+assert.equal((await getOfflineSales())[0].status, 'needs_attention');
+assert.match((await getOfflineSales())[0].lastError, /Stock insuficiente/);
 
-retryOfflineSale('offline-sale-0002');
-assert.equal(getOfflineSales()[0].status, 'pending');
-assert.equal(getOfflineSales()[0].lastError, null);
+await retryOfflineSale('offline-sale-0002');
+assert.equal((await getOfflineSales())[0].status, 'pending');
+assert.equal((await getOfflineSales())[0].lastError, null);
+await removeOfflineSale('offline-sale-0002');
 
-console.log('offline POS logic: OK');
+Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, configurable: true });
+for (let i = 0; i < 250; i += 1) {
+  await queueOfflineSale({
+    idempotencyKey: `capacity-${String(i).padStart(4, '0')}`,
+    total: 10 + i,
+    payload: { payment_method: 'cash', lines: [{ product_id: `p-${i}`, quantity: 1 }] },
+  });
+}
+const durable = await getOfflineSales();
+assert.equal(durable.length, 250);
+assert.equal(durable[0].idempotencyKey, 'capacity-0000');
+assert.equal(durable.at(-1).idempotencyKey, 'capacity-0249');
+
+console.log('offline POS durable logic: OK');

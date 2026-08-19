@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -22,14 +22,22 @@ class Receivable(Base):
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(24), default="open", nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class ReceivablePayment(Base):
     __tablename__ = "receivable_payments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_receivable_payment_idempotency"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     receivable_id: Mapped[str] = mapped_column(ForeignKey("receivables.id", ondelete="RESTRICT"), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     method: Mapped[str] = mapped_column(String(40), nullable=False)
     reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -51,14 +59,22 @@ class Payable(Base):
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(24), default="open", nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class PayablePayment(Base):
     __tablename__ = "payable_payments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_payable_payment_idempotency"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     payable_id: Mapped[str] = mapped_column(ForeignKey("payables.id", ondelete="RESTRICT"), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     method: Mapped[str] = mapped_column(String(40), nullable=False)
     reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -81,7 +97,18 @@ class BankAccount(Base):
 
 class BankTransaction(Base):
     __tablename__ = "bank_transactions"
-    __table_args__ = (UniqueConstraint("tenant_id", "bank_account_id", "external_reference", name="uq_bank_tx_external"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "bank_account_id", "external_reference", name="uq_bank_tx_external"),
+        Index(
+            "uq_bank_match_target",
+            "tenant_id",
+            "matched_type",
+            "matched_id",
+            unique=True,
+            postgresql_where=text("reconciliation_status = 'matched' AND matched_id IS NOT NULL"),
+            sqlite_where=text("reconciliation_status = 'matched' AND matched_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
@@ -94,3 +121,6 @@ class BankTransaction(Base):
     matched_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
     matched_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}

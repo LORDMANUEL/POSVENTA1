@@ -7,8 +7,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .accounting_integration import AccountingIntegrationService
 from .commerce_models import (
     Order,
     OrderLine,
@@ -20,6 +22,7 @@ from .commerce_models import (
 )
 from .config import get_settings
 from .db import get_db
+from .integrity import canonical_request_hash, require_idempotency_match
 from .media_models import ProductMedia
 from .models import Branch, Product, StockBalance, Tenant, User, UserRole
 from .ops_models import Customer
@@ -57,14 +60,20 @@ def _utc_aware(value: datetime) -> datetime:
 
 
 def _tenant_by_slug(db: Session, slug: str) -> Tenant:
-    tenant = db.scalar(select(Tenant).where(Tenant.slug == slug, Tenant.active.is_(True)))
+    tenant = db.scalar(
+        select(Tenant).where(Tenant.slug == slug, Tenant.active.is_(True))
+    )
     if not tenant:
         raise HTTPException(status_code=404, detail="Tienda no encontrada")
     return tenant
 
 
 def _tracking_token(order_id: str) -> str:
-    return hmac.new(settings.jwt_secret.encode(), f"track:{order_id}".encode(), hashlib.sha256).hexdigest()
+    return hmac.new(
+        settings.jwt_secret.encode(),
+        f"track:{order_id}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _tracking_hash(token: str) -> str:
@@ -89,13 +98,38 @@ def _serialize_order(order: Order, include_token: bool = False) -> dict:
             for line in order.lines
         ],
         "payments": [
-            {"id": p.id, "method": p.method, "status": p.status.value, "amount": str(p.amount)}
+            {
+                "id": p.id,
+                "method": p.method,
+                "status": p.status.value,
+                "amount": str(p.amount),
+            }
             for p in order.payments
         ],
     }
     if include_token:
         body["tracking_token"] = _tracking_token(order.id)
     return body
+
+
+def _checkout_hash(slug: str, payload: CheckoutIn) -> str:
+    lines = [
+        {"product_id": line.product_id, "quantity": line.quantity}
+        for line in payload.lines
+    ]
+    lines.sort(key=lambda item: item["product_id"])
+    return canonical_request_hash(
+        {
+            "slug": slug,
+            "full_name": payload.full_name.strip(),
+            "email": payload.email.lower().strip() if payload.email else None,
+            "phone": payload.phone,
+            "payment_method": payload.payment_method,
+            "fulfillment_method": payload.fulfillment_method,
+            "delivery_address": payload.delivery_address,
+            "lines": lines,
+        }
+    )
 
 
 @store_router.get("/{slug}/catalog")
@@ -143,58 +177,140 @@ def public_catalog(slug: str, db: Session = Depends(get_db)) -> dict:
 def checkout(
     slug: str,
     payload: CheckoutIn,
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=100)],
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=8, max_length=100),
+    ],
     db: Session = Depends(get_db),
 ) -> dict:
     tenant = _tenant_by_slug(db, slug)
-    existing = db.scalar(select(Order).where(Order.tenant_id == tenant.id, Order.idempotency_key == idempotency_key))
+    request_hash = _checkout_hash(slug, payload)
+    existing = db.scalar(
+        select(Order).where(
+            Order.tenant_id == tenant.id,
+            Order.idempotency_key == idempotency_key,
+        )
+    )
     if existing:
+        require_idempotency_match(existing.request_hash, request_hash)
         return _serialize_order(existing, include_token=True)
+
     if payload.fulfillment_method == "delivery" and not payload.delivery_address:
-        raise HTTPException(status_code=422, detail="La entrega a domicilio requiere dirección")
-    branch = db.scalar(select(Branch).where(Branch.tenant_id == tenant.id, Branch.active.is_(True)).order_by(Branch.code))
+        raise HTTPException(
+            status_code=422,
+            detail="La entrega a domicilio requiere dirección",
+        )
+
+    branch = db.scalar(
+        select(Branch)
+        .where(Branch.tenant_id == tenant.id, Branch.active.is_(True))
+        .order_by(Branch.code)
+    )
     if not branch:
         raise HTTPException(status_code=409, detail="La tienda no tiene sucursal activa")
+
+    requested_lines = sorted(payload.lines, key=lambda line: line.product_id)
+    seen_products: set[str] = set()
+    for requested in requested_lines:
+        if requested.product_id in seen_products:
+            raise HTTPException(
+                status_code=422,
+                detail="Un producto no debe repetirse en el checkout",
+            )
+        seen_products.add(requested.product_id)
+
     customer = None
     normalized_email = payload.email.lower().strip() if payload.email else None
     if normalized_email:
-        customer = db.scalar(select(Customer).where(Customer.tenant_id == tenant.id, Customer.email == normalized_email))
+        customer = db.scalar(
+            select(Customer).where(
+                Customer.tenant_id == tenant.id,
+                Customer.email == normalized_email,
+            )
+        )
     if customer is None:
-        customer = Customer(tenant_id=tenant.id, full_name=payload.full_name, email=normalized_email, phone=payload.phone)
-        db.add(customer)
-        db.flush()
+        customer = Customer(
+            tenant_id=tenant.id,
+            full_name=payload.full_name,
+            email=normalized_email,
+            phone=payload.phone,
+        )
+        if normalized_email:
+            try:
+                with db.begin_nested():
+                    db.add(customer)
+                    db.flush()
+            except IntegrityError:
+                customer = db.scalar(
+                    select(Customer).where(
+                        Customer.tenant_id == tenant.id,
+                        Customer.email == normalized_email,
+                    )
+                )
+                if customer is None:
+                    raise
+        else:
+            db.add(customer)
+            db.flush()
     else:
         customer.full_name = payload.full_name
         if payload.phone:
             customer.phone = payload.phone
+
     order = Order(
         tenant_id=tenant.id,
         branch_id=branch.id,
         customer_id=customer.id,
         idempotency_key=idempotency_key,
+        request_hash=request_hash,
         tracking_token_hash="pending",
-        status=OrderStatus.CONFIRMED if payload.payment_method == "cash_on_delivery" else OrderStatus.PENDING_PAYMENT,
+        status=(
+            OrderStatus.CONFIRMED
+            if payload.payment_method == "cash_on_delivery"
+            else OrderStatus.PENDING_PAYMENT
+        ),
         subtotal=Decimal("0"),
         total=Decimal("0"),
         fulfillment_method=payload.fulfillment_method,
         delivery_address=payload.delivery_address,
     )
-    db.add(order)
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.add(order)
+            db.flush()
+    except IntegrityError:
+        existing = db.scalar(
+            select(Order).where(
+                Order.tenant_id == tenant.id,
+                Order.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is None:
+            raise
+        require_idempotency_match(existing.request_hash, request_hash)
+        return _serialize_order(existing, include_token=True)
+
     order.tracking_token_hash = _tracking_hash(_tracking_token(order.id))
     subtotal = Decimal("0")
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
-    seen_products: set[str] = set()
-    for requested in payload.lines:
-        if requested.product_id in seen_products:
-            raise HTTPException(status_code=422, detail="Un producto no debe repetirse en el checkout")
-        seen_products.add(requested.product_id)
-        product = db.scalar(select(Product).where(Product.id == requested.product_id, Product.tenant_id == tenant.id, Product.active.is_(True)))
+
+    for requested in requested_lines:
+        product = db.scalar(
+            select(Product).where(
+                Product.id == requested.product_id,
+                Product.tenant_id == tenant.id,
+                Product.active.is_(True),
+            )
+        )
         if not product:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
         balance = db.scalar(
             select(StockBalance)
-            .where(StockBalance.tenant_id == tenant.id, StockBalance.branch_id == branch.id, StockBalance.product_id == product.id)
+            .where(
+                StockBalance.tenant_id == tenant.id,
+                StockBalance.branch_id == branch.id,
+                StockBalance.product_id == product.id,
+            )
             .with_for_update()
         )
         on_hand = Decimal(balance.quantity) if balance else Decimal("0")
@@ -210,72 +326,198 @@ def checkout(
         available = on_hand - Decimal(reserved or 0)
         quantity = Decimal(requested.quantity)
         if quantity > available:
-            raise HTTPException(status_code=409, detail=f"Stock insuficiente para {product.name}; disponible: {available}")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Stock insuficiente para {product.name}; disponible: {available}",
+            )
         line_total = money(Decimal(product.sale_price) * quantity)
         subtotal += line_total
-        db.add(OrderLine(order_id=order.id, product_id=product.id, quantity=quantity, unit_price=product.sale_price, line_total=line_total))
-        db.add(StockReservation(tenant_id=tenant.id, branch_id=branch.id, order_id=order.id, product_id=product.id, quantity=quantity, status=ReservationStatus.ACTIVE, expires_at=expires_at))
+        db.add(
+            OrderLine(
+                order_id=order.id,
+                product_id=product.id,
+                quantity=quantity,
+                unit_price=product.sale_price,
+                line_total=line_total,
+            )
+        )
+        db.add(
+            StockReservation(
+                tenant_id=tenant.id,
+                branch_id=branch.id,
+                order_id=order.id,
+                product_id=product.id,
+                quantity=quantity,
+                status=ReservationStatus.ACTIVE,
+                expires_at=expires_at,
+            )
+        )
+
     order.subtotal = money(subtotal)
     order.total = money(subtotal)
-    db.add(Payment(tenant_id=tenant.id, order_id=order.id, method=payload.payment_method, amount=order.total, status=PaymentStatus.PENDING))
+    db.add(
+        Payment(
+            tenant_id=tenant.id,
+            order_id=order.id,
+            method=payload.payment_method,
+            amount=order.total,
+            status=PaymentStatus.PENDING,
+        )
+    )
     db.commit()
     db.refresh(order)
     return _serialize_order(order, include_token=True)
 
 
 @store_router.get("/{slug}/orders/{order_id}/track")
-def track_order(slug: str, order_id: str, token: str, db: Session = Depends(get_db)) -> dict:
+def track_order(
+    slug: str,
+    order_id: str,
+    token: str,
+    db: Session = Depends(get_db),
+) -> dict:
     tenant = _tenant_by_slug(db, slug)
-    order = db.scalar(select(Order).where(Order.id == order_id, Order.tenant_id == tenant.id))
-    if not order or not hmac.compare_digest(order.tracking_token_hash, _tracking_hash(token)):
+    order = db.scalar(
+        select(Order).where(Order.id == order_id, Order.tenant_id == tenant.id)
+    )
+    if not order or not hmac.compare_digest(
+        order.tracking_token_hash,
+        _tracking_hash(token),
+    ):
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
     return _serialize_order(order)
 
 
 @commerce_router.get("/orders")
-def list_orders(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
-    orders = db.scalars(select(Order).where(Order.tenant_id == user.tenant_id).order_by(Order.created_at.desc())).all()
+def list_orders(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    orders = db.scalars(
+        select(Order)
+        .where(Order.tenant_id == user.tenant_id)
+        .order_by(Order.created_at.desc())
+    ).all()
     return [_serialize_order(order) for order in orders]
 
 
 @commerce_router.post("/orders/{order_id}/mark-paid")
-def mark_order_paid(order_id: str, payload: MarkPaidIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER))) -> dict:
-    order = db.scalar(select(Order).where(Order.id == order_id, Order.tenant_id == user.tenant_id))
+def mark_order_paid(
+    order_id: str,
+    payload: MarkPaidIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)
+    ),
+) -> dict:
+    order = db.scalar(
+        select(Order)
+        .where(Order.id == order_id, Order.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
-    payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
+    payment = db.scalar(
+        select(Payment)
+        .where(Payment.order_id == order.id)
+        .order_by(Payment.created_at.desc())
+        .with_for_update()
+    )
     if not payment:
         raise HTTPException(status_code=409, detail="Pedido sin registro de pago")
+    if payment.status == PaymentStatus.PAID:
+        return _serialize_order(order)
+    if payment.status not in {PaymentStatus.PENDING, PaymentStatus.FAILED}:
+        raise HTTPException(status_code=409, detail="El pago no está en estado confirmable")
     payment.status = PaymentStatus.PAID
     payment.external_reference = payload.external_reference
     if order.status == OrderStatus.PENDING_PAYMENT:
         order.status = OrderStatus.CONFIRMED
-    AuditService.record(db, user, "order.payment_confirmed", "order", order.id, {"method": payment.method})
+    AccountingIntegrationService.post_order_revenue(db, user, order, payment.method)
+    AuditService.record(
+        db,
+        user,
+        "order.payment_confirmed",
+        "order",
+        order.id,
+        {"method": payment.method, "external_reference": payload.external_reference},
+    )
     db.commit()
     return _serialize_order(order)
 
 
 @commerce_router.post("/orders/{order_id}/fulfill")
-def fulfill_order(order_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE))) -> dict:
-    order = db.scalar(select(Order).where(Order.id == order_id, Order.tenant_id == user.tenant_id))
+def fulfill_order(
+    order_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)
+    ),
+) -> dict:
+    order = db.scalar(
+        select(Order)
+        .where(Order.id == order_id, Order.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
     if order.status == OrderStatus.FULFILLED:
         return _serialize_order(order)
-    if order.status not in {OrderStatus.CONFIRMED, OrderStatus.PREPARING, OrderStatus.READY}:
-        raise HTTPException(status_code=409, detail="El pedido no está listo para consumir inventario")
-    reservations = db.scalars(select(StockReservation).where(StockReservation.order_id == order.id, StockReservation.status == ReservationStatus.ACTIVE)).all()
+    if order.status not in {
+        OrderStatus.CONFIRMED,
+        OrderStatus.PREPARING,
+        OrderStatus.READY,
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail="El pedido no está listo para consumir inventario",
+        )
+
+    reservations = db.scalars(
+        select(StockReservation)
+        .where(
+            StockReservation.order_id == order.id,
+            StockReservation.status == ReservationStatus.ACTIVE,
+        )
+        .order_by(StockReservation.product_id)
+        .with_for_update()
+    ).all()
     if len(reservations) != len(order.lines):
-        raise HTTPException(status_code=409, detail="Las reservas del pedido no están completas")
+        raise HTTPException(
+            status_code=409,
+            detail="Las reservas del pedido no están completas",
+        )
+
     now = datetime.now(timezone.utc)
-    for reservation in reservations:
-        if _utc_aware(reservation.expires_at) <= now:
+    expired = [row for row in reservations if _utc_aware(row.expires_at) <= now]
+    if expired:
+        for reservation in expired:
             reservation.status = ReservationStatus.EXPIRED
-            db.commit()
-            raise HTTPException(status_code=409, detail="La reserva del pedido venció")
-        InventoryService.move(db, user, order.branch_id, reservation.product_id, -Decimal(reservation.quantity), "online_order", "order", order.id, prevent_negative=True)
+        db.commit()
+        raise HTTPException(status_code=409, detail="La reserva del pedido venció")
+
+    for reservation in reservations:
+        InventoryService.move(
+            db,
+            user,
+            order.branch_id,
+            reservation.product_id,
+            -Decimal(reservation.quantity),
+            "online_order",
+            "order",
+            order.id,
+            prevent_negative=True,
+        )
         reservation.status = ReservationStatus.CONSUMED
     order.status = OrderStatus.FULFILLED
-    AuditService.record(db, user, "order.fulfilled", "order", order.id, {"total": str(order.total)})
+    AccountingIntegrationService.post_order_cogs(db, user, order)
+    AuditService.record(
+        db,
+        user,
+        "order.fulfilled",
+        "order",
+        order.id,
+        {"total": str(order.total)},
+    )
     db.commit()
     return _serialize_order(order)

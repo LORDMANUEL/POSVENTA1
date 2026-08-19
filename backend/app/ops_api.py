@@ -6,8 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .accounting_integration import AccountingIntegrationService
 from .db import get_db
-from .models import Branch, Product, User, UserRole
+from .integrity import require_branch_scope
+from .models import Product, Sale, User, UserRole
 from .module_api import require_enabled_module
 from .ops_models import (
     Customer,
@@ -100,24 +102,51 @@ class DeliveryStatusIn(BaseModel):
     proof_note: str | None = Field(default=None, max_length=2000)
 
 
+DELIVERY_TRANSITIONS = {
+    DeliveryStatus.PENDING: {DeliveryStatus.ASSIGNED, DeliveryStatus.FAILED},
+    DeliveryStatus.ASSIGNED: {DeliveryStatus.OUT_FOR_DELIVERY, DeliveryStatus.FAILED},
+    DeliveryStatus.OUT_FOR_DELIVERY: {DeliveryStatus.DELIVERED, DeliveryStatus.FAILED},
+    DeliveryStatus.DELIVERED: set(),
+    DeliveryStatus.FAILED: {DeliveryStatus.ASSIGNED},
+}
+
+
 def _ensure_branch(db: Session, tenant_id: str, branch_id: str) -> None:
-    exists = db.scalar(select(Branch.id).where(Branch.id == branch_id, Branch.tenant_id == tenant_id))
-    if not exists:
-        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    require_branch_scope(db, tenant_id, branch_id, active_only=True)
 
 
 def _ensure_product(db: Session, tenant_id: str, product_id: str) -> None:
-    exists = db.scalar(select(Product.id).where(Product.id == product_id, Product.tenant_id == tenant_id))
+    exists = db.scalar(
+        select(Product.id).where(
+            Product.id == product_id,
+            Product.tenant_id == tenant_id,
+        )
+    )
     if not exists:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+
+def _reject_duplicate_products(lines) -> None:
+    ids = [line.product_id for line in lines]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="Un producto no debe repetirse en el mismo documento",
+        )
 
 
 @ops_router.get("/users")
 def list_users(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)
+    ),
 ) -> list[dict]:
-    users = db.scalars(select(User).where(User.tenant_id == user.tenant_id).order_by(User.full_name)).all()
+    users = db.scalars(
+        select(User)
+        .where(User.tenant_id == user.tenant_id)
+        .order_by(User.full_name)
+    ).all()
     return [
         {
             "id": item.id,
@@ -138,7 +167,12 @@ def create_user(
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN)),
 ) -> dict:
     email = payload.email.lower().strip()
-    if db.scalar(select(User.id).where(User.tenant_id == user.tenant_id, User.email == email)):
+    if db.scalar(
+        select(User.id).where(
+            User.tenant_id == user.tenant_id,
+            User.email == email,
+        )
+    ):
         raise HTTPException(status_code=409, detail="Correo ya registrado")
     branch_id = payload.branch_id or user.branch_id
     if branch_id:
@@ -153,23 +187,50 @@ def create_user(
     )
     db.add(new_user)
     db.flush()
-    AuditService.record(db, user, "user.created", "user", new_user.id, {"role": payload.role.value})
+    AuditService.record(
+        db,
+        user,
+        "user.created",
+        "user",
+        new_user.id,
+        {"role": payload.role.value},
+    )
     db.commit()
     return {"id": new_user.id, "email": new_user.email, "role": new_user.role.value}
 
 
 @ops_router.get("/customers", response_model=list[CustomerOut])
-def list_customers(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[Customer]:
-    return list(db.scalars(select(Customer).where(Customer.tenant_id == user.tenant_id).order_by(Customer.full_name)))
+def list_customers(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[Customer]:
+    return list(
+        db.scalars(
+            select(Customer)
+            .where(Customer.tenant_id == user.tenant_id)
+            .order_by(Customer.full_name)
+        )
+    )
 
 
 @ops_router.post("/customers", response_model=CustomerOut, status_code=201)
 def create_customer(
     payload: CustomerIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.SALES)),
+    user: User = Depends(
+        require_roles(
+            UserRole.OWNER,
+            UserRole.ADMIN,
+            UserRole.MANAGER,
+            UserRole.CASHIER,
+            UserRole.SALES,
+        )
+    ),
 ) -> Customer:
-    customer = Customer(tenant_id=user.tenant_id, **payload.model_dump())
+    data = payload.model_dump()
+    if data.get("email"):
+        data["email"] = data["email"].lower().strip()
+    customer = Customer(tenant_id=user.tenant_id, **data)
     db.add(customer)
     db.flush()
     AuditService.record(db, user, "customer.created", "customer", customer.id)
@@ -185,9 +246,23 @@ def create_customer(
 )
 def list_suppliers(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE, UserRole.AUDITOR)),
+    user: User = Depends(
+        require_roles(
+            UserRole.OWNER,
+            UserRole.ADMIN,
+            UserRole.MANAGER,
+            UserRole.WAREHOUSE,
+            UserRole.AUDITOR,
+        )
+    ),
 ) -> list[Supplier]:
-    return list(db.scalars(select(Supplier).where(Supplier.tenant_id == user.tenant_id).order_by(Supplier.name)))
+    return list(
+        db.scalars(
+            select(Supplier)
+            .where(Supplier.tenant_id == user.tenant_id)
+            .order_by(Supplier.name)
+        )
+    )
 
 
 @ops_router.post(
@@ -199,7 +274,9 @@ def list_suppliers(
 def create_supplier(
     payload: SupplierIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)
+    ),
 ) -> Supplier:
     supplier = Supplier(tenant_id=user.tenant_id, **payload.model_dump())
     db.add(supplier)
@@ -218,13 +295,21 @@ def create_supplier(
 def create_purchase(
     payload: PurchaseIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)
+    ),
 ) -> dict:
+    _reject_duplicate_products(payload.lines)
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
     _ensure_branch(db, user.tenant_id, branch_id)
-    supplier = db.scalar(select(Supplier).where(Supplier.id == payload.supplier_id, Supplier.tenant_id == user.tenant_id))
+    supplier = db.scalar(
+        select(Supplier).where(
+            Supplier.id == payload.supplier_id,
+            Supplier.tenant_id == user.tenant_id,
+        )
+    )
     if not supplier:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
     purchase = PurchaseOrder(
@@ -237,10 +322,17 @@ def create_purchase(
     )
     db.add(purchase)
     db.flush()
-    for line in payload.lines:
+    for line in sorted(payload.lines, key=lambda row: row.product_id):
         _ensure_product(db, user.tenant_id, line.product_id)
         db.add(PurchaseOrderLine(purchase_order_id=purchase.id, **line.model_dump()))
-    AuditService.record(db, user, "purchase.created", "purchase_order", purchase.id, {"supplier_id": supplier.id})
+    AuditService.record(
+        db,
+        user,
+        "purchase.created",
+        "purchase_order",
+        purchase.id,
+        {"supplier_id": supplier.id},
+    )
     db.commit()
     return {"id": purchase.id, "status": purchase.status.value}
 
@@ -252,16 +344,25 @@ def create_purchase(
 def receive_purchase(
     purchase_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)
+    ),
 ) -> dict:
-    purchase = db.scalar(select(PurchaseOrder).where(PurchaseOrder.id == purchase_id, PurchaseOrder.tenant_id == user.tenant_id))
+    purchase = db.scalar(
+        select(PurchaseOrder)
+        .where(
+            PurchaseOrder.id == purchase_id,
+            PurchaseOrder.tenant_id == user.tenant_id,
+        )
+        .with_for_update()
+    )
     if not purchase:
         raise HTTPException(status_code=404, detail="Orden de compra no encontrada")
     if purchase.status == PurchaseStatus.RECEIVED:
         return {"id": purchase.id, "status": purchase.status.value}
     if purchase.status != PurchaseStatus.ORDERED:
         raise HTTPException(status_code=409, detail="La orden no está en estado recibible")
-    for line in purchase.lines:
+    for line in sorted(purchase.lines, key=lambda row: row.product_id):
         InventoryService.move(
             db,
             user,
@@ -274,6 +375,7 @@ def receive_purchase(
         )
     purchase.status = PurchaseStatus.RECEIVED
     purchase.received_at = datetime.now(timezone.utc)
+    AccountingIntegrationService.post_purchase_receipt(db, user, purchase)
     AuditService.record(db, user, "purchase.received", "purchase_order", purchase.id)
     db.commit()
     return {"id": purchase.id, "status": purchase.status.value}
@@ -283,8 +385,11 @@ def receive_purchase(
 def create_transfer(
     payload: TransferIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)
+    ),
 ) -> dict:
+    _reject_duplicate_products(payload.lines)
     if payload.from_branch_id == payload.to_branch_id:
         raise HTTPException(status_code=422, detail="Origen y destino deben ser diferentes")
     _ensure_branch(db, user.tenant_id, payload.from_branch_id)
@@ -298,7 +403,7 @@ def create_transfer(
     )
     db.add(transfer)
     db.flush()
-    for line in payload.lines:
+    for line in sorted(payload.lines, key=lambda row: row.product_id):
         _ensure_product(db, user.tenant_id, line.product_id)
         db.add(StockTransferLine(transfer_id=transfer.id, **line.model_dump()))
     AuditService.record(db, user, "transfer.created", "stock_transfer", transfer.id)
@@ -310,14 +415,25 @@ def create_transfer(
 def ship_transfer(
     transfer_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)
+    ),
 ) -> dict:
-    transfer = db.scalar(select(StockTransfer).where(StockTransfer.id == transfer_id, StockTransfer.tenant_id == user.tenant_id))
+    transfer = db.scalar(
+        select(StockTransfer)
+        .where(
+            StockTransfer.id == transfer_id,
+            StockTransfer.tenant_id == user.tenant_id,
+        )
+        .with_for_update()
+    )
     if not transfer:
         raise HTTPException(status_code=404, detail="Transferencia no encontrada")
+    if transfer.status == TransferStatus.SHIPPED:
+        return {"id": transfer.id, "status": transfer.status.value}
     if transfer.status != TransferStatus.PENDING:
         raise HTTPException(status_code=409, detail="La transferencia no está pendiente")
-    for line in transfer.lines:
+    for line in sorted(transfer.lines, key=lambda row: row.product_id):
         InventoryService.move(
             db,
             user,
@@ -340,16 +456,25 @@ def ship_transfer(
 def receive_transfer(
     transfer_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)
+    ),
 ) -> dict:
-    transfer = db.scalar(select(StockTransfer).where(StockTransfer.id == transfer_id, StockTransfer.tenant_id == user.tenant_id))
+    transfer = db.scalar(
+        select(StockTransfer)
+        .where(
+            StockTransfer.id == transfer_id,
+            StockTransfer.tenant_id == user.tenant_id,
+        )
+        .with_for_update()
+    )
     if not transfer:
         raise HTTPException(status_code=404, detail="Transferencia no encontrada")
     if transfer.status == TransferStatus.RECEIVED:
         return {"id": transfer.id, "status": transfer.status.value}
     if transfer.status != TransferStatus.SHIPPED:
         raise HTTPException(status_code=409, detail="La transferencia aún no fue despachada")
-    for line in transfer.lines:
+    for line in sorted(transfer.lines, key=lambda row: row.product_id):
         InventoryService.move(
             db,
             user,
@@ -371,7 +496,10 @@ def receive_transfer(
     "/deliveries",
     dependencies=[Depends(require_enabled_module("delivery"))],
 )
-def list_deliveries(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
+def list_deliveries(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
     query = select(Delivery).where(Delivery.tenant_id == user.tenant_id)
     if user.role == UserRole.DRIVER:
         query = query.where(Delivery.driver_user_id == user.id)
@@ -398,23 +526,66 @@ def list_deliveries(db: Session = Depends(get_db), user: User = Depends(get_curr
 def create_delivery(
     payload: DeliveryIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.SALES, UserRole.WAREHOUSE)),
+    user: User = Depends(
+        require_roles(
+            UserRole.OWNER,
+            UserRole.ADMIN,
+            UserRole.MANAGER,
+            UserRole.SALES,
+            UserRole.WAREHOUSE,
+        )
+    ),
 ) -> dict:
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
     _ensure_branch(db, user.tenant_id, branch_id)
+    if payload.sale_id:
+        sale = db.scalar(
+            select(Sale).where(
+                Sale.id == payload.sale_id,
+                Sale.tenant_id == user.tenant_id,
+                Sale.branch_id == branch_id,
+            )
+        )
+        if not sale:
+            raise HTTPException(status_code=404, detail="Venta no encontrada en esta sucursal")
+    if payload.customer_id:
+        customer = db.scalar(
+            select(Customer).where(
+                Customer.id == payload.customer_id,
+                Customer.tenant_id == user.tenant_id,
+            )
+        )
+        if not customer:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
     if payload.driver_user_id:
-        driver = db.scalar(select(User).where(User.id == payload.driver_user_id, User.tenant_id == user.tenant_id, User.role == UserRole.DRIVER))
+        driver = db.scalar(
+            select(User).where(
+                User.id == payload.driver_user_id,
+                User.tenant_id == user.tenant_id,
+                User.role == UserRole.DRIVER,
+                User.active.is_(True),
+            )
+        )
         if not driver:
             raise HTTPException(status_code=404, detail="Driver no encontrado")
+        if driver.branch_id and driver.branch_id != branch_id:
+            raise HTTPException(
+                status_code=409,
+                detail="El driver pertenece a otra sucursal",
+            )
     delivery = Delivery(
         tenant_id=user.tenant_id,
         branch_id=branch_id,
         sale_id=payload.sale_id,
         customer_id=payload.customer_id,
         driver_user_id=payload.driver_user_id,
-        status=DeliveryStatus.ASSIGNED if payload.driver_user_id else DeliveryStatus.PENDING,
+        status=(
+            DeliveryStatus.ASSIGNED
+            if payload.driver_user_id
+            else DeliveryStatus.PENDING
+        ),
         address_text=payload.address_text,
     )
     db.add(delivery)
@@ -434,19 +605,57 @@ def update_delivery_status(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    delivery = db.scalar(select(Delivery).where(Delivery.id == delivery_id, Delivery.tenant_id == user.tenant_id))
+    delivery = db.scalar(
+        select(Delivery)
+        .where(
+            Delivery.id == delivery_id,
+            Delivery.tenant_id == user.tenant_id,
+        )
+        .with_for_update()
+    )
     if not delivery:
         raise HTTPException(status_code=404, detail="Entrega no encontrada")
     if user.role == UserRole.DRIVER and delivery.driver_user_id != user.id:
         raise HTTPException(status_code=403, detail="Esta entrega no está asignada a usted")
-    if user.role not in {UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.DRIVER}:
+    if user.role not in {
+        UserRole.OWNER,
+        UserRole.ADMIN,
+        UserRole.MANAGER,
+        UserRole.DRIVER,
+    }:
         raise HTTPException(status_code=403, detail="No tiene permiso para cambiar la entrega")
+    if payload.status == delivery.status:
+        return {
+            "id": delivery.id,
+            "status": delivery.status.value,
+            "proof_note": delivery.proof_note,
+        }
+    allowed = DELIVERY_TRANSITIONS.get(delivery.status, set())
+    if payload.status not in allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transición inválida: {delivery.status.value} -> {payload.status.value}",
+        )
+    if payload.status == DeliveryStatus.DELIVERED and not payload.proof_note:
+        raise HTTPException(
+            status_code=422,
+            detail="La prueba de entrega requiere una nota",
+        )
     delivery.status = payload.status
     delivery.proof_note = payload.proof_note
     if payload.status == DeliveryStatus.DELIVERED:
         delivery.delivered_at = datetime.now(timezone.utc)
-        if not payload.proof_note:
-            raise HTTPException(status_code=422, detail="La prueba de entrega requiere una nota")
-    AuditService.record(db, user, "delivery.status_changed", "delivery", delivery.id, {"status": payload.status.value})
+    AuditService.record(
+        db,
+        user,
+        "delivery.status_changed",
+        "delivery",
+        delivery.id,
+        {"status": payload.status.value},
+    )
     db.commit()
-    return {"id": delivery.id, "status": delivery.status.value, "proof_note": delivery.proof_note}
+    return {
+        "id": delivery.id,
+        "status": delivery.status.value,
+        "proof_note": delivery.proof_note,
+    }

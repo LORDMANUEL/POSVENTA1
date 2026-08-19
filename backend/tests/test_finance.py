@@ -4,14 +4,14 @@ def enable(client, headers, key: str) -> None:
 
 
 def test_receivables_payables_and_banking_are_modular(client, owner_headers) -> None:
-    # Finance endpoints are blocked until their module is enabled.
-    assert client.get("/finance/receivables", headers=owner_headers).status_code == 403
+    # Internal finance modules are operational by default on a fresh stable install.
+    assert client.get("/finance/receivables", headers=owner_headers).status_code == 200
 
-    enable(client, owner_headers, "accounting")
+    # A tenant can still disable an optional module explicitly; its API then fails closed.
+    disabled = client.put("/admin/modules/receivables?enabled=false", headers=owner_headers)
+    assert disabled.status_code == 200
+    assert client.get("/finance/receivables", headers=owner_headers).status_code == 403
     enable(client, owner_headers, "receivables")
-    enable(client, owner_headers, "banking")
-    enable(client, owner_headers, "purchasing")
-    enable(client, owner_headers, "payables")
 
     customer = client.post(
         "/ops/customers",

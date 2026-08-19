@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -19,12 +19,15 @@ class RefundStatus(str, enum.Enum):
 
 class ReturnRecord(Base):
     __tablename__ = "return_records"
+    __table_args__ = (UniqueConstraint("tenant_id", "idempotency_key", name="uq_return_idempotency"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     branch_id: Mapped[str] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)
     sale_id: Mapped[str] = mapped_column(ForeignKey("sales.id", ondelete="RESTRICT"), index=True)
     created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reason: Mapped[str] = mapped_column(String(240), nullable=False)
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

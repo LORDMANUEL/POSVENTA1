@@ -3,11 +3,14 @@ def test_module_registry_and_accounting_flow(client, owner_headers) -> None:
     assert modules.status_code == 200
     by_key = {row["key"]: row for row in modules.json()}
     assert by_key["catalog"]["enabled"] is True
-    assert by_key["accounting"]["enabled"] is False
-
-    enable_accounting = client.put("/admin/modules/accounting?enabled=true", headers=owner_headers)
-    assert enable_accounting.status_code == 200
-    assert enable_accounting.json() == {"key": "accounting", "enabled": True}
+    assert by_key["accounting"]["enabled"] is True
+    assert by_key["purchasing"]["enabled"] is True
+    assert by_key["returns"]["enabled"] is True
+    assert by_key["analytics"]["enabled"] is True
+    assert by_key["payments"]["enabled"] is False
+    assert by_key["fiscal"]["enabled"] is False
+    assert by_key["music"]["enabled"] is False
+    assert by_key["visual"]["enabled"] is False
 
     cash = client.post(
         "/accounting/accounts",

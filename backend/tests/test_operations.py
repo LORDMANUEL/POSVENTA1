@@ -3,6 +3,11 @@ def enable_module(client, headers, key: str) -> None:
     assert response.status_code == 200, response.text
 
 
+def disable_module(client, headers, key: str) -> None:
+    response = client.put(f"/admin/modules/{key}?enabled=false", headers=headers)
+    assert response.status_code == 200, response.text
+
+
 def create_product(client, headers, sku="MZ-OPS-001"):
     response = client.post(
         "/products",
@@ -19,7 +24,14 @@ def create_product(client, headers, sku="MZ-OPS-001"):
     return response.json()["id"]
 
 
-def test_optional_ops_are_fail_closed(client, owner_headers) -> None:
+def test_internal_ops_are_enabled_by_default_and_can_fail_closed(client, owner_headers) -> None:
+    assert client.get("/ops/suppliers", headers=owner_headers).status_code == 200
+    assert client.get("/ops/deliveries", headers=owner_headers).status_code == 200
+
+    # Purchasing has payables as a dependant in the default full-internal profile.
+    disable_module(client, owner_headers, "payables")
+    disable_module(client, owner_headers, "purchasing")
+    disable_module(client, owner_headers, "delivery")
     assert client.get("/ops/suppliers", headers=owner_headers).status_code == 403
     assert client.get("/ops/deliveries", headers=owner_headers).status_code == 403
 
@@ -79,7 +91,7 @@ def test_purchase_receipt_and_transfer_between_branches(client, owner_headers) -
     assert by_branch[destination_id] == "3.000"
 
 
-def test_driver_only_updates_assigned_delivery(client, owner_headers) -> None:
+def test_driver_follows_delivery_state_machine(client, owner_headers) -> None:
     enable_module(client, owner_headers, "delivery")
     branch_id = client.get("/admin/branches", headers=owner_headers).json()[0]["id"]
     driver = client.post(
@@ -126,12 +138,20 @@ def test_driver_only_updates_assigned_delivery(client, owner_headers) -> None:
     assert assigned.status_code == 200
     assert len(assigned.json()) == 1
 
+    out_for_delivery = client.post(
+        f"/ops/deliveries/{delivery.json()['id']}/status",
+        headers=driver_headers,
+        json={"status": "out_for_delivery", "proof_note": None},
+    )
+    assert out_for_delivery.status_code == 200, out_for_delivery.text
+    assert out_for_delivery.json()["status"] == "out_for_delivery"
+
     delivered = client.post(
         f"/ops/deliveries/{delivery.json()['id']}/status",
         headers=driver_headers,
         json={"status": "delivered", "proof_note": "Entregado a cliente; recibido conforme."},
     )
-    assert delivered.status_code == 200
+    assert delivered.status_code == 200, delivered.text
     assert delivered.json()["status"] == "delivered"
 
 

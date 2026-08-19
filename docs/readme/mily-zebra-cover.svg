@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">Mily Zebra Commerce OS</title>
+  <desc id="desc">Portada editorial rosa, lavanda, blanco y negro para el ERP ecommerce Mily Zebra.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff8fb"/>
+      <stop offset="0.55" stop-color="#ffe6f0"/>
+      <stop offset="1" stop-color="#f1edff"/>
+    </linearGradient>
+    <linearGradient id="pink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ef6f9b"/>
+      <stop offset="1" stop-color="#cf2f6c"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="22" stdDeviation="28" flood-color="#222" flood-opacity=".14"/>
+    </filter>
+    <clipPath id="zebraClip"><circle cx="1250" cy="355" r="255"/></clipPath>
+  </defs>
+  <rect width="1600" height="720" rx="42" fill="url(#bg)"/>
+  <circle cx="151" cy="122" r="102" fill="#fff" opacity=".82"/>
+  <circle cx="1480" cy="630" r="170" fill="#fff" opacity=".55"/>
+  <path d="M0 610 C260 500 360 740 660 625 C935 520 1080 705 1600 535 L1600 720 L0 720Z" fill="#fff" opacity=".64"/>
+  <g opacity=".08" stroke="#222" stroke-width="26" fill="none">
+    <path d="M-60 120 C70 45 130 220 260 145 S455 60 570 155"/>
+    <path d="M-80 205 C55 120 125 305 280 220 S485 135 610 235"/>
+  </g>
+  <g filter="url(#shadow)">
+    <circle cx="1250" cy="355" r="270" fill="#fff"/>
+    <g clip-path="url(#zebraClip)" fill="#222">
+      <path d="M950 138 C1070 210 1085 278 1030 352 C1115 320 1170 260 1188 82 L1080 58Z"/>
+      <path d="M1098 620 C1110 510 1170 445 1268 404 C1180 514 1200 584 1250 670Z"/>
+      <path d="M1230 68 C1238 188 1290 240 1395 264 C1304 286 1255 350 1240 420 C1198 320 1160 250 1130 180Z"/>
+      <path d="M1380 102 C1350 205 1386 278 1474 335 C1370 322 1308 352 1264 435 C1290 312 1274 230 1245 148Z"/>
+      <path d="M1490 320 C1394 365 1362 430 1378 548 C1316 454 1250 436 1168 476 C1244 402 1300 360 1360 286Z"/>
+      <path d="M1515 512 C1414 494 1344 532 1280 635 C1300 520 1265 458 1180 405 C1300 448 1390 428 1480 374Z"/>
+    </g>
+    <circle cx="1250" cy="355" r="270" fill="none" stroke="#ef6f9b" stroke-width="12"/>
+    <circle cx="1250" cy="355" r="228" fill="none" stroke="#c8b6ff" stroke-width="4" stroke-dasharray="16 18"/>
+    <text x="1250" y="342" text-anchor="middle" font-family="Georgia, serif" font-size="82" font-weight="700" fill="#e94782">MZ</text>
+    <text x="1250" y="405" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="800" letter-spacing="9" fill="#222">COMMERCE OS</text>
+  </g>
+  <text x="120" y="214" font-family="Georgia, serif" font-size="92" font-weight="700" fill="#222">Mily Zebra</text>
+  <text x="122" y="286" font-family="Arial, sans-serif" font-size="30" font-weight="800" letter-spacing="7" fill="#e94782">COMMERCE OS</text>
+  <text x="120" y="382" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#3d3940">ERP · POS · Ecommerce · Inventario · Finanzas · CRM · IA</text>
+  <text x="120" y="438" font-family="Arial, sans-serif" font-size="26" fill="#706a73">Una sola plataforma para tienda física, web, Windows y operación multi-sucursal.</text>
+  <g transform="translate(120 500)">
+    <rect width="345" height="66" rx="33" fill="url(#pink)"/>
+    <text x="172" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="23" font-weight="800" fill="#fff">v0.12.1 · CANDIDATA ESTABLE</text>
+  </g>
+  <g transform="translate(490 500)">
+    <rect width="315" height="66" rx="33" fill="#222"/>
+    <text x="157" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="23" font-weight="800" fill="#fff">TIENDA ROATÁN</text>
+  </g>
+  <text x="120" y="646" font-family="Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="3" fill="#9e80ec">SEGURA · CÓMODA · MODULAR · AUDITABLE</text>
+</svg>

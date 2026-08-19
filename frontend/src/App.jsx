@@ -19,6 +19,7 @@ import {
 import ModuleSettings from './ModuleSettings';
 import CatalogImportTools from './CatalogImportTools';
 import OfflineSalesStatus, { submitSaleResilient } from './OfflineSalesStatus';
+import ReturnsView from './PostSales';
 import { allowedViewsForRole, defaultViewForRole } from './navigation';
 
 const money = new Intl.NumberFormat('es-HN', { style: 'currency', currency: 'HNL' });
@@ -26,6 +27,7 @@ const money = new Intl.NumberFormat('es-HN', { style: 'currency', currency: 'HNL
 const labels = {
   home: 'Panel de tienda',
   pos: 'Punto de venta',
+  returns: 'Devoluciones',
   products: 'Catálogo',
   inventory: 'Inventario',
   cash: 'Caja',
@@ -102,24 +104,77 @@ function Inventory({ rows, products, refresh }) {
 }
 
 function Cash() {
-  const [opening, setOpening] = useState('0'); const [session, setSession] = useState(null); const [closing, setClosing] = useState('0'); const [message, setMessage] = useState('');
-  const open = async () => { const result = await api.request('/cash/open', { method: 'POST', body: JSON.stringify({ opening_amount: opening }) }); setSession(result); setMessage('Caja abierta correctamente'); };
-  const close = async () => { if (!session) return; await api.request(`/cash/${session.id}/close`, { method: 'POST', body: JSON.stringify({ closing_amount: closing }) }); setSession(null); setMessage('Caja cerrada y auditada'); };
-  return <section className="panel narrow"><p className="eyebrow">Control de efectivo</p><h2>Caja diaria</h2>{!session ? <div className="stack"><label>Fondo inicial<input type="number" value={opening} onChange={(e) => setOpening(e.target.value)} /></label><button className="primary" onClick={open}>Abrir caja</button></div> : <div className="stack"><div className="notice">Sesión {session.id.slice(0, 8)} activa</div><label>Efectivo contado<input type="number" value={closing} onChange={(e) => setClosing(e.target.value)} /></label><button className="danger" onClick={close}>Cerrar caja</button></div>}{message && <p className="muted">{message}</p>}</section>;
+  const [opening, setOpening] = useState('0');
+  const [session, setSession] = useState(null);
+  const [closing, setClosing] = useState('0');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  const loadCurrent = async () => {
+    try {
+      const current = await api.request('/cash/current');
+      setSession(current);
+      if (current?.expected_amount != null) setClosing(current.expected_amount);
+      return current;
+    } catch (err) {
+      setError(err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadCurrent(); }, []);
+
+  const open = async () => {
+    setMessage(''); setError('');
+    try {
+      await api.request('/cash/open', { method: 'POST', body: JSON.stringify({ opening_amount: opening }) });
+      const current = await loadCurrent();
+      if (current) setMessage('Caja abierta correctamente');
+    } catch (err) { setError(err.message); }
+  };
+  const close = async () => {
+    if (!session) return;
+    setMessage(''); setError('');
+    try {
+      await api.request(`/cash/${session.id}/close`, { method: 'POST', body: JSON.stringify({ closing_amount: closing }) });
+      await loadCurrent();
+      setMessage('Caja cerrada y auditada');
+    } catch (err) { setError(err.message); }
+  };
+
+  if (loading) return <section className="panel narrow"><p className="muted">Recuperando caja actual…</p></section>;
+  return <section className="panel narrow"><p className="eyebrow">Control de efectivo</p><h2>Caja diaria</h2>{!session ? <div className="stack"><label>Fondo inicial<input type="number" value={opening} onChange={(e) => setOpening(e.target.value)} /></label><button className="primary" onClick={open}>Abrir caja</button></div> : <div className="stack"><div className="notice">Sesión {session.id.slice(0, 8)} activa</div><p className="muted">Fondo: {money.format(Number(session.opening_amount))} · esperado: {money.format(Number(session.expected_amount || 0))}</p><label>Efectivo contado<input type="number" value={closing} onChange={(e) => setClosing(e.target.value)} /></label><button className="danger" onClick={close}>Cerrar caja</button></div>}{message && <p className="muted">{message}</p>}{error && <div className="error">{error}</div>}</section>;
 }
 
 function App() {
   const [me, setMe] = useState(null); const [products, setProducts] = useState([]); const [inventory, setInventory] = useState([]); const [loading, setLoading] = useState(Boolean(api.token));
   const [view, setView] = useState('home');
+  const [online, setOnline] = useState(() => navigator.onLine !== false);
   const refresh = async () => {
     const [meData, productData, stockData] = await Promise.all([api.request('/me'), api.request('/products'), api.request('/inventory')]);
     setMe(meData); setProducts(productData); setInventory(stockData);
     return meData;
   };
   useEffect(() => {
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    const onConnectivity = (event) => setOnline(Boolean(event.detail?.online));
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('mz-connectivity', onConnectivity);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('mz-connectivity', onConnectivity);
+    };
+  }, []);
+  useEffect(() => {
     if (api.token) refresh()
       .then((meData) => setView(defaultViewForRole(meData.role)))
-      .catch(() => api.setToken(''))
+      .catch((error) => { if (!error?.network) api.setToken(''); })
       .finally(() => setLoading(false));
   }, []);
   const allowed = useMemo(() => allowedViewsForRole(me?.role), [me?.role]);
@@ -131,7 +186,7 @@ function App() {
     if (managementOnly.has(item) && !['owner', 'admin', 'manager', 'auditor'].includes(me.role)) return false;
     return true;
   });
-  return <div className="app-shell"><aside className="sidebar"><div className="logo"><span>MZ</span><div><strong>Mily Zebra</strong><small>Commerce OS</small></div></div><nav>{nav.map((item) => <button key={item} className={view === item ? 'active' : ''} onClick={() => setView(item)}>{labels[item]}</button>)}</nav><div className="user-card"><strong>{me.full_name}</strong><small>{me.role}</small><button className="link" onClick={() => { api.setToken(''); location.reload(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Roatán · operación en vivo</p><h1>{labels[view] || 'Mily Zebra'}</h1></div><div className="status"><i /> API conectada</div></header>{view === 'home' && <div className="dashboard"><article><small>Productos</small><strong>{products.length}</strong><span>catálogo activo</span></article><article><small>Unidades visibles</small><strong>{inventory.reduce((sum, row) => sum + Number(row.quantity), 0)}</strong><span>en inventario</span></article><article><small>Perfil</small><strong>{me.role}</strong><span>según RBAC del servidor</span></article></div>}{view === 'analytics' && <AnalyticsView />}{view === 'pos' && <Pos products={products} refresh={refresh} />}{view === 'products' && <><section className="panel"><div className="panel-title"><div><p className="eyebrow">Catálogo</p><h2>Nuevo producto</h2></div></div><ProductForm onSaved={refresh} /><div className="product-list">{products.map((p) => <div key={p.id}><span><strong>{p.name}</strong><small>{p.sku} · {p.category}</small></span><b>{money.format(Number(p.sale_price))}</b></div>)}</div></section><CatalogImportTools onCatalogCommitted={refresh} /></>}{view === 'inventory' && <Inventory rows={inventory} products={products} refresh={refresh} />}{view === 'cash' && <Cash />}{view === 'customers' && <CustomersView />}{view === 'crm' && <CrmView />}{view === 'suppliers' && <SuppliersView />}{view === 'purchases' && <PurchasesView products={products} refreshInventory={refresh} />}{view === 'transfers' && <TransfersView products={products} refreshInventory={refresh} />}{view === 'deliveries' && <DeliveriesView me={me} />}{view === 'finance' && <FinanceView />}{view === 'accounting' && <AccountingView />}{view === 'people' && <PeopleView />}{view === 'automation' && <AutomationView />}{view === 'modules' && <ModuleSettings />}{view === 'admin' && <UsersDevicesView />}</main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="logo"><span>MZ</span><div><strong>Mily Zebra</strong><small>Commerce OS</small></div></div><nav>{nav.map((item) => <button key={item} className={view === item ? 'active' : ''} onClick={() => setView(item)}>{labels[item]}</button>)}</nav><div className="user-card"><strong>{me.full_name}</strong><small>{me.role}</small><button className="link" onClick={() => { api.setToken(''); location.reload(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Roatán · operación</p><h1>{labels[view] || 'Mily Zebra'}</h1></div><div className="status"><i /> {online ? 'API conectada' : 'Modo offline'}</div></header>{view === 'home' && <div className="dashboard"><article><small>Productos</small><strong>{products.length}</strong><span>catálogo activo</span></article><article><small>Unidades visibles</small><strong>{inventory.reduce((sum, row) => sum + Number(row.quantity), 0)}</strong><span>en inventario</span></article><article><small>Perfil</small><strong>{me.role}</strong><span>según RBAC del servidor</span></article></div>}{view === 'analytics' && <AnalyticsView />}{view === 'pos' && <Pos products={products} refresh={refresh} />}{view === 'returns' && <ReturnsView refreshInventory={refresh} />}{view === 'products' && <><section className="panel"><div className="panel-title"><div><p className="eyebrow">Catálogo</p><h2>Nuevo producto</h2></div></div><ProductForm onSaved={refresh} /><div className="product-list">{products.map((p) => <div key={p.id}><span><strong>{p.name}</strong><small>{p.sku} · {p.category}</small></span><b>{money.format(Number(p.sale_price))}</b></div>)}</div></section><CatalogImportTools onCatalogCommitted={refresh} /></>}{view === 'inventory' && <Inventory rows={inventory} products={products} refresh={refresh} />}{view === 'cash' && <Cash />}{view === 'customers' && <CustomersView />}{view === 'crm' && <CrmView />}{view === 'suppliers' && <SuppliersView />}{view === 'purchases' && <PurchasesView products={products} refreshInventory={refresh} />}{view === 'transfers' && <TransfersView products={products} refreshInventory={refresh} />}{view === 'deliveries' && <DeliveriesView me={me} />}{view === 'finance' && <FinanceView />}{view === 'accounting' && <AccountingView />}{view === 'people' && <PeopleView />}{view === 'automation' && <AutomationView />}{view === 'modules' && <ModuleSettings />}{view === 'admin' && <UsersDevicesView />}</main></div>;
 }
 
 export default App;

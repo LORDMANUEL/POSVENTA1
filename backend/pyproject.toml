@@ -1,6 +1,6 @@
 [project]
 name = "mily-zebra-api"
-version = "0.11.0"
+version = "0.12.1"
 description = "Mily Zebra Commerce OS modular ERP API"
 requires-python = ">=3.12"
 dependencies = [

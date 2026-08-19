@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from .admin_models import Device
 from .db import get_db
+from .integrity import require_branch_scope
 from .models import Branch, PrintJob, PrintJobStatus, User, UserRole
 from .security import require_roles
 from .services import AuditService
@@ -57,10 +58,19 @@ def get_current_device(
 @admin_router.get("/branches")
 def list_branches(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)
+    ),
 ) -> list[dict]:
-    branches = db.scalars(select(Branch).where(Branch.tenant_id == user.tenant_id).order_by(Branch.code)).all()
-    return [{"id": b.id, "code": b.code, "name": b.name, "active": b.active} for b in branches]
+    branches = db.scalars(
+        select(Branch)
+        .where(Branch.tenant_id == user.tenant_id)
+        .order_by(Branch.code)
+    ).all()
+    return [
+        {"id": b.id, "code": b.code, "name": b.name, "active": b.active}
+        for b in branches
+    ]
 
 
 @admin_router.post("/branches", status_code=201)
@@ -69,12 +79,28 @@ def create_branch(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN)),
 ) -> dict:
-    if db.scalar(select(Branch.id).where(Branch.tenant_id == user.tenant_id, Branch.code == payload.code)):
+    if db.scalar(
+        select(Branch.id).where(
+            Branch.tenant_id == user.tenant_id,
+            Branch.code == payload.code,
+        )
+    ):
         raise HTTPException(status_code=409, detail="Código de sucursal ya registrado")
-    branch = Branch(tenant_id=user.tenant_id, code=payload.code, name=payload.name)
+    branch = Branch(
+        tenant_id=user.tenant_id,
+        code=payload.code,
+        name=payload.name,
+    )
     db.add(branch)
     db.flush()
-    AuditService.record(db, user, "branch.created", "branch", branch.id, {"code": branch.code})
+    AuditService.record(
+        db,
+        user,
+        "branch.created",
+        "branch",
+        branch.id,
+        {"code": branch.code},
+    )
     db.commit()
     return {"id": branch.id, "code": branch.code, "name": branch.name}
 
@@ -82,9 +108,15 @@ def create_branch(
 @admin_router.get("/devices")
 def list_devices(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.SUPPORT)),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.SUPPORT)
+    ),
 ) -> list[dict]:
-    devices = db.scalars(select(Device).where(Device.tenant_id == user.tenant_id).order_by(Device.name)).all()
+    devices = db.scalars(
+        select(Device)
+        .where(Device.tenant_id == user.tenant_id)
+        .order_by(Device.name)
+    ).all()
     return [
         {
             "id": d.id,
@@ -105,10 +137,18 @@ def enroll_device(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN)),
 ) -> dict:
-    branch = db.scalar(select(Branch).where(Branch.id == payload.branch_id, Branch.tenant_id == user.tenant_id))
-    if not branch:
-        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
-    if db.scalar(select(Device.id).where(Device.tenant_id == user.tenant_id, Device.device_id == payload.device_id)):
+    branch = require_branch_scope(
+        db,
+        user.tenant_id,
+        payload.branch_id,
+        active_only=True,
+    )
+    if db.scalar(
+        select(Device.id).where(
+            Device.tenant_id == user.tenant_id,
+            Device.device_id == payload.device_id,
+        )
+    ):
         raise HTTPException(status_code=409, detail="Device ID ya registrado")
     plain_token = secrets.token_urlsafe(32)
     device = Device(
@@ -121,7 +161,14 @@ def enroll_device(
     )
     db.add(device)
     db.flush()
-    AuditService.record(db, user, "device.enrolled", "device", device.id, {"device_id": device.device_id})
+    AuditService.record(
+        db,
+        user,
+        "device.enrolled",
+        "device",
+        device.id,
+        {"device_id": device.device_id},
+    )
     db.commit()
     return {
         "id": device.id,
@@ -137,7 +184,7 @@ def device_claim_print_job(
     db: Session = Depends(get_db),
     device: Device = Depends(get_current_device),
 ) -> dict | None:
-    job = db.scalar(
+    query = (
         select(PrintJob)
         .where(
             PrintJob.tenant_id == device.tenant_id,
@@ -145,9 +192,12 @@ def device_claim_print_job(
             PrintJob.status == PrintJobStatus.QUEUED,
             (PrintJob.device_id.is_(None) | (PrintJob.device_id == device.device_id)),
         )
-        .order_by(PrintJob.created_at)
+        .order_by(PrintJob.created_at, PrintJob.id)
         .limit(1)
     )
+    if db.get_bind().dialect.name == "postgresql":
+        query = query.with_for_update(skip_locked=True)
+    job = db.scalar(query)
     if not job:
         return None
     job.status = PrintJobStatus.CLAIMED
@@ -165,15 +215,16 @@ def device_complete_print_job(
     db: Session = Depends(get_db),
     device: Device = Depends(get_current_device),
 ) -> dict:
-    job = db.scalar(
-        select(PrintJob).where(
-            PrintJob.id == job_id,
-            PrintJob.tenant_id == device.tenant_id,
-            PrintJob.branch_id == device.branch_id,
-            PrintJob.device_id == device.device_id,
-            PrintJob.status == PrintJobStatus.CLAIMED,
-        )
+    query = select(PrintJob).where(
+        PrintJob.id == job_id,
+        PrintJob.tenant_id == device.tenant_id,
+        PrintJob.branch_id == device.branch_id,
+        PrintJob.device_id == device.device_id,
+        PrintJob.status == PrintJobStatus.CLAIMED,
     )
+    if db.get_bind().dialect.name == "postgresql":
+        query = query.with_for_update()
+    job = db.scalar(query)
     if not job:
         raise HTTPException(status_code=404, detail="Trabajo reclamado no encontrado")
     job.status = PrintJobStatus.COMPLETED if success else PrintJobStatus.FAILED
