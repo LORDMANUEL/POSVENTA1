@@ -4,7 +4,7 @@ const BASE = process.env.MZ_E2E_BASE_URL || 'http://127.0.0.1';
 const EMAIL = process.env.MZ_E2E_EMAIL || 'owner.e2e@milyzebra.test';
 const PASSWORD = process.env.MZ_E2E_PASSWORD || 'StableE2E-2026!';
 
-test('admin WebView/PWA survives offline reload and synchronizes a sale', async ({ page, context }) => {
+test('admin WebView/PWA survives offline reload, syncs sale and processes return', async ({ page, context }) => {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(String(error)));
 
@@ -41,6 +41,7 @@ test('admin WebView/PWA survives offline reload and synchronizes a sale', async 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.locator('#mz-connectivity-banner')).toContainText('Modo sin conexión');
   await expect(page.getByText('owner', { exact: true })).toBeVisible();
+  await expect(page.getByText('Modo offline', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Punto de venta' }).click();
   await page.getByRole('button', { name: /Blusa E2E/ }).first().click();
@@ -52,9 +53,21 @@ test('admin WebView/PWA survives offline reload and synchronizes a sale', async 
   await context.setOffline(false);
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
   await expect(page.getByText(/1 venta\(s\) offline sincronizada\(s\)/)).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText('API conectada', { exact: true })).toBeVisible();
 
   const remaining = await page.evaluate(() => JSON.parse(localStorage.getItem('mz_offline_sales_v1') || '[]'));
   expect(remaining).toHaveLength(0);
+
+  await page.getByRole('button', { name: 'Devoluciones' }).click();
+  await expect(page.getByRole('heading', { name: 'Devolución de venta' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Devoluciones recientes' })).toBeVisible();
+  const returnInput = page.getByLabel('Devolver Blusa E2E').first();
+  await expect(returnInput).toBeEnabled();
+  await returnInput.fill('1');
+  await page.getByRole('button', { name: 'Registrar devolución' }).click();
+  await expect(page.getByText(/Devolución registrada por/)).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText(/Reembolso: completed/)).toBeVisible();
+
   expect(pageErrors).toEqual([]);
 });
 
