@@ -1,3 +1,6 @@
+import { setConnectivity } from './connectivity';
+import { clearSnapshots, isSnapshotPath, loadSnapshot, saveSnapshot } from './offlineSnapshot';
+
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 export class ApiError extends Error {
@@ -18,17 +21,27 @@ export class ApiClient {
   setToken(token) {
     this.token = token;
     if (token) localStorage.setItem('mz_token', token);
-    else localStorage.removeItem('mz_token');
+    else {
+      localStorage.removeItem('mz_token');
+      clearSnapshots();
+    }
   }
 
   async request(path, options = {}) {
+    const method = String(options.method || 'GET').toUpperCase();
     const headers = new Headers(options.headers || {});
     if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
     if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
     let response;
     try {
       response = await fetch(`${API_URL}${path}`, { ...options, headers });
+      setConnectivity(true);
     } catch (error) {
+      setConnectivity(false);
+      if (method === 'GET' && isSnapshotPath(path)) {
+        const cached = loadSnapshot(path);
+        if (cached) return cached.value;
+      }
       throw new ApiError('Sin conexión con el servidor', 0, null, true, { cause: error });
     }
     const text = await response.text();
@@ -39,6 +52,7 @@ export class ApiClient {
       const message = typeof detail === 'string' ? detail : (detail ? JSON.stringify(detail) : (body || `HTTP ${response.status}`));
       throw new ApiError(String(message), response.status, body, false);
     }
+    if (method === 'GET' && isSnapshotPath(path)) saveSnapshot(path, body);
     return body;
   }
 
@@ -55,7 +69,9 @@ export class ApiClient {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: form,
       });
+      setConnectivity(true);
     } catch (error) {
+      setConnectivity(false);
       throw new ApiError('Sin conexión con el servidor', 0, null, true, { cause: error });
     }
     const body = await response.json();
