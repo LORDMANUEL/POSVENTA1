@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .accounting_integration import AccountingIntegrationService
 from .cash_models import CashMovement
 from .db import get_db
 from .integrity import canonical_request_hash, require_idempotency_match
@@ -387,6 +388,13 @@ def create_return(
             )
         )
 
+    AccountingIntegrationService.post_return(
+        db,
+        user,
+        record,
+        prepared,
+        sale.payment_method,
+    )
     AuditService.record(
         db,
         user,
