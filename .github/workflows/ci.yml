@@ -78,6 +78,18 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  desktop_contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install launcher runtime
+        run: pip install -r desktop/requirements.txt
+      - name: Test launcher contract
+        run: python -m unittest desktop/test_launcher.py -v
+
   compose:
     runs-on: ubuntu-latest
     steps:
