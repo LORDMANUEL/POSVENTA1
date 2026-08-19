@@ -1,4 +1,4 @@
-# Manual de operación — Mily Zebra Commerce OS
+# Manual de operación — Mily Zebra Commerce OS v0.12.1
 
 ## Objetivo
 
@@ -9,41 +9,60 @@ Guía operativa para propietarios, administración, gerencia, cajera, vendedor, 
 - **owner:** control total del tenant y configuración crítica.
 - **admin:** administración operativa, usuarios, módulos y dispositivos.
 - **manager:** supervisión de tienda, inventario, ventas y operación autorizada.
-- **cashier:** POS y caja propia.
-- **sales:** venta y atención comercial.
-- **warehouse:** catálogo operativo, inventario, recepción, conteos, transferencias y etiquetas.
+- **cashier:** POS, devoluciones y caja propia.
+- **sales:** venta, postventa permitida y atención comercial.
+- **warehouse:** catálogo, inventario, recepción, conteos, transferencias y etiquetas.
 - **driver:** entregas asignadas y prueba de entrega.
-- **auditor:** consulta de información y auditoría sin facultades operativas sensibles.
-- **support:** soporte técnico limitado a las funciones permitidas.
+- **auditor:** consulta sin facultades operativas sensibles.
+- **support:** soporte técnico limitado a las funciones autorizadas.
 
 El backend es la autoridad de permisos. Ocultar un botón no sustituye RBAC.
 
+## Primera instalación
+
+Después de crear al propietario, el ERP interno validado queda operativo por defecto. No es necesario activar manualmente compras, CRM, contabilidad, RR.HH., workflows o analítica.
+
+Permanecen apagados hasta certificación externa: pagos/adquirente, fiscal/CAI, música/audio físico y probador/kiosco visual.
+
 ## Inicio de jornada
 
-1. Verifique conexión del equipo y agente local.
-2. Inicie sesión con cuenta individual; no comparta credenciales.
+1. Verifique conexión y, si se usa hardware, el agente local.
+2. Inicie sesión con una cuenta individual.
 3. Cajera: abra su caja e indique fondo inicial.
-4. Bodega: revise recepciones, transferencias y alertas de reposición.
-5. Gerencia: revise dashboard, diferencias pendientes y pedidos ecommerce.
+4. Bodega: revise recepciones, transferencias y reposición.
+5. Gerencia: revise dashboard, diferencias y pedidos.
 
-## POS y caja
+## POS, caja y modo offline
 
-Una venta en efectivo requiere caja abierta. El sistema registra la venta, salida de inventario, movimiento de caja, recibo y trabajo de apertura de cajón dentro del flujo correspondiente.
+Una venta en efectivo online requiere caja abierta. El servidor registra venta, salida de inventario, movimiento de caja, recibo y apertura de cajón.
 
-Al cierre:
+Si se pierde Internet, `MilyZebra.exe`/PWA puede reabrir el app-shell desde Service Worker y usar la última instantánea de usuario, catálogo e inventario como referencia. Esa instantánea es **solo lectura**.
+
+Una venta offline:
+
+1. recibe un `Idempotency-Key` único;
+2. queda pendiente localmente;
+3. no descuenta stock en el servidor mientras no exista confirmación;
+4. se reintenta con la misma clave al volver Internet;
+5. el servidor vuelve a validar usuario, caja, precios, stock y permisos;
+6. si existe conflicto queda **Requiere atención** y no se borra silenciosamente.
+
+No cierre el navegador borrando datos de sitio mientras existan ventas offline pendientes.
+
+### Cierre de caja
 
 1. Cuente físicamente el efectivo.
 2. Registre el monto contado.
 3. El sistema calcula el esperado desde el ledger.
 4. Revise la diferencia.
-5. No altere movimientos históricos para esconder un descuadre.
+5. No altere movimientos históricos para ocultar descuadres.
 6. Documente y escale diferencias según política interna.
 
-## Productos y catálogo
+## Productos, fotografías e importación
 
 Cada producto maneja SKU, código de barras, nombre, descripción, categoría, talla, color, costo y precio. La galería admite hasta cinco fotografías validadas y convertidas a WebP.
 
-Para mercadería real registre además las características operativas definidas por la tienda. La carga masiva debe pasar validación antes de importar y no debe saltarse controles de inventario.
+La importación masiva tiene preview y commit atómico. Para ZIP de fotografías utilice el manifiesto definido por el sistema; un error de archivo/SKU/seguridad impide dejar una importación parcial.
 
 ## Inventario
 
@@ -60,128 +79,148 @@ Operaciones principales:
 
 ### Conteo físico
 
-1. Cree el conteo para la sucursal.
-2. Registre cantidades contadas.
-3. Revise diferencias contra sistema.
-4. Un usuario autorizado aprueba.
-5. Solo entonces se genera el ajuste en ledger.
+1. Cree el conteo.
+2. Registre cantidades físicas.
+3. Revise diferencias.
+4. Un segundo usuario autorizado aprueba.
+5. El usuario que contó no puede aprobar su propio ajuste.
+6. Solo la aprobación genera el movimiento de ledger.
 
 ### Reposición
 
-Configure mínimo y objetivo por producto/sucursal. Las sugerencias se calculan desde existencia disponible y política configurada; son recomendaciones, no compras automáticas.
+Configure mínimo y objetivo por producto/sucursal. Las sugerencias no crean compras automáticamente.
 
 ## Compras y proveedores
 
 1. Registre proveedor.
-2. Cree orden con productos, cantidades y costo.
-3. Reciba la mercadería en la sucursal correcta.
-4. La recepción incrementa inventario mediante ledger.
-5. Registre CxP cuando aplique.
+2. Cree orden con líneas, cantidades y costo.
+3. Reciba en la sucursal correcta.
+4. La recepción actualiza inventario por ledger.
+5. Registre CxP cuando corresponda.
 
 ## Transferencias
 
-Una transferencia conserva origen, destino, líneas, estado, despacho y recepción. No utilice ajustes manuales para simular transferencias.
+Una transferencia conserva origen, destino, líneas, despacho y recepción. No use ajustes manuales para simular una transferencia.
 
 ## Ecommerce
 
-La tienda pública usa el mismo catálogo y fuente de inventario que el ERP.
-
-Flujo:
+La tienda pública y el ERP usan el mismo catálogo e inventario.
 
 1. Cliente navega catálogo.
 2. Agrega productos.
-3. Checkout vuelve a validar precio/stock.
-4. Se crea pedido idempotente.
-5. Se reserva inventario.
-6. Se registra el método de pago.
-7. Al confirmarse se prepara y entrega/recoge.
+3. Checkout revalida precio/stock.
+4. Crea pedido idempotente.
+5. Reserva inventario.
+6. Registra método de pago.
+7. Cuando se confirma, prepara y entrega/recoge.
 8. La reserva se consume o libera según resultado.
 
-Nunca vuelva a cobrar automáticamente un pago de resultado desconocido.
+Nunca vuelva a cobrar automáticamente un resultado de pago desconocido.
 
 ## Devoluciones y reembolsos
 
-El sistema impide devolver más unidades de las vendidas. Una devolución válida registra el retorno al inventario y el reembolso. Un proveedor de pago externo debe confirmar su propio reembolso; hasta entonces el estado permanece pendiente.
+La pantalla **Devoluciones** lista ventas recientes y muestra por línea:
+
+- producto/SKU;
+- cantidad vendida;
+- cantidad previamente devuelta;
+- cantidad máxima todavía retornable.
+
+Flujo:
+
+1. Seleccione la venta.
+2. Indique cantidades a devolver.
+3. Escriba el motivo.
+4. Registre la devolución.
+5. El sistema usa un `Idempotency-Key`; si el navegador reintenta la misma operación no duplica inventario ni reembolso.
+
+Para una venta en efectivo:
+
+- debe existir caja abierta del usuario en la sucursal de la venta;
+- el stock vuelve mediante ledger;
+- el reembolso genera un movimiento negativo de caja;
+- se genera recibo de devolución y trabajo de apertura de cajón;
+- si no hay caja abierta, la operación devuelve conflicto antes de modificar stock.
+
+Para pagos externos, el reembolso permanece `pending_external` hasta que el proveedor confirme. No se simula como completado.
+
+El sistema impide devolver más unidades de las originalmente vendidas menos las ya devueltas.
 
 ## Clientes, CRM y lealtad
 
-Clientes y CRM son dominios distintos. CRM registra leads/oportunidades/etapas e interacciones. Lealtad utiliza su propio ledger de puntos. No cambie saldos de puntos manualmente.
-
-Marketing requiere consentimiento válido por canal/propósito cuando corresponda.
+Clientes y CRM son dominios distintos. CRM registra leads, oportunidades e interacciones. Lealtad usa su propio ledger de puntos. Marketing debe respetar consentimientos por canal/propósito.
 
 ## Entregas y driver
 
-El driver consulta únicamente entregas autorizadas/asignadas. Debe actualizar estados reales y registrar prueba/nota de entrega. No marque como entregado un pedido no recibido.
+El driver ve únicamente entregas autorizadas/asignadas. Debe actualizar estados reales y registrar prueba/nota. No marque entregado un pedido no recibido.
 
-## Impresión
+## Impresión y hardware
 
 - Recibos: ESC/POS.
 - Cajón: pulso ESC/POS autorizado.
-- Etiquetas: ZPL mediante impresora configurada.
-- Los trabajos se reclaman por un dispositivo enrolado y se confirman como completados o fallidos.
+- Etiquetas: ZPL/TCP RAW.
+- El agente se enrola por dispositivo y sucursal.
+- Un token incorrecto no puede reclamar trabajos.
+- La cola se procesa en orden y cada trabajo se confirma `completed` o `failed`.
+
+La certificación física de impresora/cajón/etiquetadora se realiza con los modelos reales instalados.
 
 ## Contabilidad y finanzas
 
-La contabilidad utiliza partida doble. Un asiento no balanceado no debe publicarse.
+La contabilidad utiliza partida doble; un asiento desbalanceado no puede publicarse.
 
-Módulos relacionados:
+Incluye plan de cuentas, diario/libro mayor, balanza, Estado de Resultados, Balance General, CxC, CxP, bancos y conciliación.
 
-- plan de cuentas;
-- diario/libro mayor;
-- CxC;
-- CxP;
-- bancos;
-- conciliación;
-- estados financieros.
-
-No borre transacciones para corregir errores contables; utilice reversas/asientos correctivos según política.
+No borre transacciones para corregir errores; utilice reversas o asientos correctivos según política.
 
 ## Fiscal
 
-El módulo fiscal administra configuración, rangos y correlativos, pero **programado no significa homologado**. No emita documentos fiscales productivos hasta que los datos reales y reglas aplicables hayan sido revisados y certificados.
+El motor fiscal administra configuración/rangos/correlativos, pero está desactivado por defecto hasta tener datos reales y homologación aplicable. Programado no significa fiscalmente certificado.
 
 ## RR.HH., asistencia y nómina
 
-RR.HH. mantiene empleados. Asistencia registra entradas/salidas e incidencias. Nómina calcula períodos y requiere aprobación antes de considerarse definitiva. La contabilización debe apoyarse en el módulo contable.
+RR.HH. mantiene empleados; asistencia registra entradas/salidas e incidencias; nómina administra períodos, líneas y aprobación. La operación definitiva debe seguir las reglas laborales/configuraciones que adopte la empresa.
 
 ## CMS, marketing y Mily Ads
 
-CMS administra contenido del storefront. Marketing administra campañas. Mily Ads administra placements y métricas. La publicación en redes externas requiere conectores/credenciales y no debe simularse como publicada si el proveedor no confirmó.
+CMS administra contenido; marketing campañas; Mily Ads placements y métricas. Una publicación externa solo debe marcarse entregada si el conector correspondiente la confirmó.
 
 ## Workflows e integraciones
 
-Las integraciones usan outbox/idempotencia para evitar duplicados. Los workers procesan trabajos pendientes y conservan errores/reintentos. No marque un evento como enviado antes de confirmación del destino.
+Outbox e idempotencia evitan duplicados. El worker aplica reintentos/backoff y no marca `delivered` sin confirmación del destino.
 
-## Música y perifoneo
+## Música, kiosco y probador
 
-Se configuran zonas, playlists y anuncios. Durante perifoneo se aplica ducking según configuración. Los derechos/licencias del contenido reproducido son responsabilidad de la operación de la tienda.
-
-## Probador/kiosco
-
-Las sesiones visuales requieren consentimiento y tienen TTL. No deben conservar fotografías indefinidamente. El kiosco debe reiniciarse tras inactividad y limpiar el contexto de la clienta anterior.
+Estos módulos permanecen con gate externo por defecto. Las sesiones visuales exigen consentimiento y TTL; no deben conservar fotografías indefinidamente.
 
 ## RAG e IA
 
-El asistente recupera evidencia antes de responder. Si no existe contexto suficiente debe indicarlo. La IA no puede mover dinero, cambiar inventario, emitir documentos fiscales ni modificar permisos por decisión autónoma.
+El asistente recupera evidencia antes de responder. Si no hay contexto suficiente debe indicarlo. La IA no puede mover dinero, inventario, fiscal ni permisos de forma autónoma.
 
-## Backups y contingencia
+## Backup y contingencia
 
-Ejecute backup periódico y conserve copia externa. Para incidentes:
+El comando oficial respalda **base de datos y media**:
 
-1. Detenga operaciones que puedan empeorar inconsistencia.
+```bash
+sudo ./scripts/backup.sh
+```
+
+Conserve una copia externa. Para incidentes:
+
+1. Detenga operaciones que agraven una inconsistencia.
 2. Capture logs.
-3. Verifique salud de DB/API.
-4. No borre evidencia/auditoría.
-5. Restaure únicamente desde backup verificado cuando corresponda.
-6. Documente la causa y corrección.
+3. Verifique salud DB/API/worker.
+4. No borre auditoría.
+5. Restaure únicamente desde un paquete verificado.
+6. Documente causa y corrección.
 
 ## Cierre de jornada
 
 - cerrar cajas;
 - revisar diferencias;
-- verificar pedidos pendientes;
-- verificar trabajos de impresión fallidos;
-- revisar entregas no cerradas;
-- revisar alertas de stock/reposición;
-- confirmar backups según política;
-- escalar incidentes de pagos, fiscal o seguridad.
+- confirmar que no queden ventas offline pendientes;
+- revisar pedidos/entregas pendientes;
+- revisar trabajos de impresión fallidos;
+- revisar reposición;
+- confirmar backup completo;
+- escalar incidentes de pagos, fiscal, hardware o seguridad.
