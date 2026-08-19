@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .accounting_api import accounting_router
 from .admin_api import admin_router, device_router
+from .analytics_api import analytics_router
 from .api import router
 from .automation_api import integration_router, workflow_router
 from .commerce_api import commerce_router, store_router
@@ -32,7 +33,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.9.0",
+    version="0.10.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -73,3 +74,4 @@ app.include_router(marketing_router)
 app.include_router(ads_router)
 app.include_router(workflow_router)
 app.include_router(integration_router)
+app.include_router(analytics_router)
