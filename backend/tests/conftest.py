@@ -3,6 +3,8 @@ import os
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 os.environ["JWT_SECRET"] = "test-secret"
 os.environ["AUTO_CREATE_SCHEMA"] = "true"
+os.environ["MEDIA_ROOT"] = "/tmp/mily-zebra-test-media"
+os.environ["OLLAMA_URL"] = ""
 
 import pytest
 from fastapi.testclient import TestClient
