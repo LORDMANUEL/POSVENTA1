@@ -56,21 +56,10 @@ SALE2_ID=$(printf '%s' "$SALE2" | json_get id)
 [[ "$SALE1_ID" == "$SALE2_ID" ]]
 
 INVENTORY=$(request GET "$API/inventory" '' "$TOKEN")
-python3 - "$PRODUCT_ID" <<'PY' <<<"$INVENTORY"
-import json,sys
-product_id=sys.argv[1]
-rows=json.load(sys.stdin)
-row=next(r for r in rows if r['product_id']==product_id)
-assert row['quantity']=='4.000', row
-PY
+python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); pid=sys.argv[2]; row=next(r for r in rows if r["product_id"]==pid); assert row["quantity"]=="4.000", row' "$INVENTORY" "$PRODUCT_ID"
 
 SUMMARY=$(request GET "$API/cash/$CASH_ID/summary" '' "$TOKEN")
-python3 - <<'PY' <<<"$SUMMARY"
-import json,sys
-s=json.load(sys.stdin)
-assert float(s['expected_amount']) >= 349.0, s
-assert any(m.get('reference_type') == 'sale' for m in s['movements']), s
-PY
+python3 -c 'import json,sys; s=json.loads(sys.argv[1]); assert s["expected_amount"]=="349.00", s; assert sum(1 for m in s["movements"] if m.get("reference_type")=="sale")==1, s' "$SUMMARY"
 
 request POST "$API/cash/$CASH_ID/close" '{"closing_amount":"349.00"}' "$TOKEN" >/tmp/mz-cash-close.json
 grep -q '"difference":"0.00"' /tmp/mz-cash-close.json
