@@ -33,12 +33,13 @@ docker compose exec -T db pg_dump \
 
 echo "Respaldando media persistente..."
 docker compose exec -T api sh -c 'tar -C /data/media -czf - .' > "$WORK/media.tar.gz"
+ALEMBIC_HEAD="$(docker compose exec -T api alembic current 2>/dev/null | awk 'NF {print $1}' | tail -n 1 | tr -d '\r')"
 
 cat > "$WORK/manifest.env" <<EOF
 MZ_BACKUP_FORMAT=2
 CREATED_AT=$STAMP
 POSTGRES_DB=$POSTGRES_DB
-ALEMBIC_HEAD=$(docker compose exec -T api alembic current 2>/dev/null | tail -n 1 | tr -d '\r')
+ALEMBIC_HEAD=$ALEMBIC_HEAD
 EOF
 
 (
