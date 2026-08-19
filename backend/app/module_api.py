@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -5,7 +7,7 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .models import User, UserRole
 from .module_registry import MODULES, TenantModule
-from .security import require_roles
+from .security import get_current_user, require_roles
 from .services import AuditService
 
 module_router = APIRouter(prefix="/admin/modules", tags=["modules"])
@@ -22,6 +24,20 @@ def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
     if row is None:
         return definition.core
     return row.enabled
+
+
+def require_enabled_module(module_key: str) -> Callable:
+    if module_key not in MODULES:
+        raise ValueError(f"Módulo no registrado: {module_key}")
+
+    def dependency(
+        db: Session = Depends(get_db),
+        user: User = Depends(get_current_user),
+    ) -> None:
+        if not effective_enabled(db, user.tenant_id, module_key):
+            raise HTTPException(status_code=403, detail=f"Módulo '{module_key}' desactivado")
+
+    return dependency
 
 
 def ensure_dependencies(db: Session, tenant_id: str, key: str) -> None:
