@@ -27,6 +27,13 @@ class TenantProvisionIn(BaseModel):
     owner_password: str = Field(min_length=10, max_length=128)
 
 
+def _tenant_paths(slug: str) -> dict[str, str]:
+    return {
+        "admin_login_path": f"/admin?tenant={slug}",
+        "storefront_path": f"/?store={slug}",
+    }
+
+
 @platform_router.get("/access")
 def platform_access(
     db: Session = Depends(get_db),
@@ -61,7 +68,7 @@ def list_tenants(
             "active": row[3],
             "created_at": row[4],
             "branch_count": int(row[5] or 0),
-            "admin_login_path": f"/admin?tenant={row[2]}",
+            **_tenant_paths(row[2]),
         }
         for row in rows
     ]
@@ -137,5 +144,5 @@ def create_tenant(
             "role": owner.role.value,
             "platform_admin": False,
         },
-        "admin_login_path": f"/admin?tenant={tenant.slug}",
+        **_tenant_paths(tenant.slug),
     }
