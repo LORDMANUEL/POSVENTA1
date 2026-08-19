@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,12 +17,30 @@ class Settings(BaseSettings):
     ollama_url: str = ""
     ollama_model: str = "qwen3:1.7b"
     ai_timeout_seconds: int = 45
+    worker_poll_seconds: float = 2.0
+    outbox_targets_json: str = "{}"
+    outbox_hmac_secret: str = ""
+    outbox_timeout_seconds: int = 15
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def outbox_targets(self) -> dict[str, str]:
+        try:
+            value = json.loads(self.outbox_targets_json or "{}")
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): str(url).strip()
+            for key, url in value.items()
+            if str(key).strip() and str(url).strip()
+        }
 
 
 @lru_cache
