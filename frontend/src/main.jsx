@@ -5,6 +5,7 @@ import Storefront from './Storefront';
 import './styles.css';
 import './operations.css';
 import './storefront.css';
+import './storefront-media.css';
 
 const params = new URLSearchParams(window.location.search);
 const isRoleClient = params.has('mode');
