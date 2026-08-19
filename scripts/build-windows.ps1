@@ -12,19 +12,12 @@ python -m venv .venv-build
 
 New-Item -ItemType Directory -Force -Path dist-windows | Out-Null
 
-$launchers = @(
-    @{ Name = 'MilyZebra-Cajera'; Mode = 'cashier' },
-    @{ Name = 'MilyZebra-Vendedor'; Mode = 'sales' },
-    @{ Name = 'MilyZebra-Bodeguero'; Mode = 'warehouse' },
-    @{ Name = 'MilyZebra-Driver'; Mode = 'driver' }
-)
+# Una sola aplicación Windows. Es un shell Chromium/WebView2 que carga la misma web /admin.
+& .\.venv-build\Scripts\pyinstaller.exe --noconfirm --clean --onefile --windowed `
+    --name 'MilyZebra' desktop\launcher.py
+Move-Item -Force 'dist\MilyZebra.exe' 'dist-windows\'
 
-foreach ($launcher in $launchers) {
-    & .\.venv-build\Scripts\pyinstaller.exe --noconfirm --clean --onefile --windowed `
-        --name $launcher.Name desktop\launcher.py
-    Move-Item -Force (Join-Path 'dist' ($launcher.Name + '.exe')) 'dist-windows\'
-}
-
+# El agente sí es un proceso separado porque accede a hardware local.
 & .\.venv-build\Scripts\pyinstaller.exe --noconfirm --clean --onefile --console `
     --name 'MilyZebra-Hardware-Agent' agent\mily_agent.py
 Move-Item -Force 'dist\MilyZebra-Hardware-Agent.exe' 'dist-windows\'
