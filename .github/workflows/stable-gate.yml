@@ -112,6 +112,7 @@ jobs:
           from sqlalchemy import create_engine, inspect
           engine = create_engine(os.environ['DATABASE_URL'])
           inspector = inspect(engine)
+          assert 'platform_operators' in inspector.get_table_names()
           assert 'request_hash' in {c['name'] for c in inspector.get_columns('sales')}
           assert 'request_hash' in {c['name'] for c in inspector.get_columns('orders')}
           assert 'request_hash' in {c['name'] for c in inspector.get_columns('return_records')}
@@ -164,6 +165,29 @@ jobs:
           pip install -e '.[dev]'
           alembic upgrade head
           alembic current | grep 20260818_0009
+      - name: Seed a real v0.12.0 tenant and owner
+        working-directory: previous/backend
+        run: |
+          python - <<'PY'
+          from app.db import SessionLocal
+          from app.models import Branch, Tenant, User, UserRole
+          from app.security import hash_password
+          with SessionLocal() as db:
+              tenant = Tenant(name='Upgrade Existing Store', slug='upgrade-existing-store')
+              db.add(tenant); db.flush()
+              branch = Branch(tenant_id=tenant.id, code='UP-01', name='Existing Branch')
+              db.add(branch); db.flush()
+              owner = User(
+                  tenant_id=tenant.id,
+                  branch_id=branch.id,
+                  email='upgrade.owner@example.com',
+                  full_name='Existing Owner',
+                  password_hash=hash_password('UpgradeOwner-2026!'),
+                  role=UserRole.OWNER,
+              )
+              db.add(owner); db.commit()
+              print(owner.id)
+          PY
       - name: Upgrade the same database with candidate
         working-directory: candidate/backend
         run: |
@@ -175,9 +199,10 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          from sqlalchemy import create_engine, inspect
+          from sqlalchemy import create_engine, inspect, text
           engine = create_engine(os.environ['DATABASE_URL'])
           i = inspect(engine)
+          assert 'platform_operators' in i.get_table_names()
           expected_versions = (
               'cash_sessions', 'print_jobs', 'purchase_orders', 'stock_transfers',
               'deliveries', 'orders', 'payments', 'receivables', 'payables',
@@ -192,6 +217,14 @@ jobs:
               assert {'idempotency_key', 'request_hash'} <= columns, (table, columns)
           assert 'uq_cash_open_user' in {x['name'] for x in i.get_indexes('cash_sessions')}
           assert 'uq_bank_match_target' in {x['name'] for x in i.get_indexes('bank_transactions')}
+          with engine.connect() as conn:
+              owner_id = conn.execute(text(
+                  "SELECT id FROM users WHERE email='upgrade.owner@example.com'"
+              )).scalar_one()
+              operator_id = conn.execute(text(
+                  "SELECT user_id FROM platform_operators WHERE user_id=:owner_id"
+              ), {'owner_id': owner_id}).scalar_one()
+              assert operator_id == owner_id
           PY
 
   installer_e2e:
