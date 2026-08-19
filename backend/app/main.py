@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .accounting_api import accounting_router
@@ -9,7 +9,7 @@ from .api import router
 from .commerce_api import commerce_router, store_router
 from .config import get_settings
 from .db import Base, engine
-from .module_api import module_router
+from .module_api import module_router, require_enabled_module
 from .ops_api import ops_router
 from .post_sale_api import post_sale_router
 
@@ -51,4 +51,4 @@ app.include_router(module_router)
 app.include_router(post_sale_router)
 app.include_router(store_router)
 app.include_router(commerce_router)
-app.include_router(accounting_router)
+app.include_router(accounting_router, dependencies=[Depends(require_enabled_module("accounting"))])
