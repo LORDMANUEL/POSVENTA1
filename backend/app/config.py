@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     jwt_secret: str = "development-only-change-me"
     jwt_issuer: str = "mily-zebra"
     jwt_ttl_minutes: int = 480
+    bootstrap_token: str = ""
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
     auto_create_schema: bool = True
     media_root: str = "/data/media"

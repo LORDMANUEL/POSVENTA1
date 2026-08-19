@@ -8,6 +8,20 @@ async function expectOwnerSession(page) {
   await expect(page.locator('.user-card').getByText('owner', { exact: true })).toBeVisible();
 }
 
+async function offlineQueueCount(page) {
+  return page.evaluate(async () => new Promise((resolve, reject) => {
+    const request = indexedDB.open('mily-zebra-pos-offline', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction('sales', 'readonly');
+      const count = tx.objectStore('sales').count();
+      count.onsuccess = () => resolve(count.result);
+      count.onerror = () => reject(count.error);
+    };
+  }));
+}
+
 test('admin WebView/PWA survives offline reload, recovers cash, syncs sale and processes return', async ({ page, context }) => {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(String(error)));
@@ -58,14 +72,15 @@ test('admin WebView/PWA survives offline reload, recovers cash, syncs sale and p
   await expect(page.getByText(/guardada localmente/)).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Ventas offline' })).toBeVisible();
   await expect(page.getByText(/1 pendiente\(s\)/)).toBeVisible();
+  expect(await offlineQueueCount(page)).toBe(1);
 
   await context.setOffline(false);
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
   await expect(page.getByText(/1 venta\(s\) offline sincronizada\(s\)/)).toBeVisible({ timeout: 15000 });
   await expect(page.getByText('API conectada', { exact: true })).toBeVisible();
-
-  const remaining = await page.evaluate(() => JSON.parse(localStorage.getItem('mz_offline_sales_v1') || '[]'));
-  expect(remaining).toHaveLength(0);
+  await expect.poll(() => offlineQueueCount(page)).toBe(0);
+  const legacyQueue = await page.evaluate(() => localStorage.getItem('mz_offline_sales_v1'));
+  expect(legacyQueue).toBeNull();
 
   await page.getByRole('button', { name: 'Devoluciones' }).click();
   await expect(page.getByRole('heading', { name: 'Devolución de venta' })).toBeVisible();

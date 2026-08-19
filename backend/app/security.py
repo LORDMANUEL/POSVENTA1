@@ -39,7 +39,10 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
     credentials_error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Sesión inválida o expirada",
@@ -53,12 +56,19 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             issuer=settings.jwt_issuer,
         )
         user_id = payload.get("sub")
-        if not user_id:
+        tenant_id = payload.get("tenant_id")
+        if not user_id or not tenant_id:
             raise credentials_error
     except InvalidTokenError as exc:
         raise credentials_error from exc
 
-    user = db.scalar(select(User).where(User.id == user_id, User.active.is_(True)))
+    user = db.scalar(
+        select(User).where(
+            User.id == user_id,
+            User.tenant_id == tenant_id,
+            User.active.is_(True),
+        )
+    )
     if not user:
         raise credentials_error
     return user
@@ -67,7 +77,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def require_roles(*roles: UserRole):
     def dependency(user: User = Depends(get_current_user)) -> User:
         if user.role not in roles:
-            raise HTTPException(status_code=403, detail="No tiene permiso para esta operación")
+            raise HTTPException(
+                status_code=403,
+                detail="No tiene permiso para esta operación",
+            )
         return user
 
     return dependency

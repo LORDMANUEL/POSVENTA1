@@ -1,9 +1,12 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from .accounting_api import accounting_router
 from .admin_api import admin_router, device_router
@@ -29,6 +32,7 @@ from .ops_api import ops_router
 from .people_api import attendance_router, hr_router, payroll_router
 from .post_sale_api import post_sale_router
 
+APP_VERSION = "0.12.1"
 settings = get_settings()
 media_path = Path(settings.media_root)
 media_path.mkdir(parents=True, exist_ok=True)
@@ -36,7 +40,6 @@ media_path.mkdir(parents=True, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Test/development convenience only. Production .env disables this and Alembic owns schema changes.
     if settings.auto_create_schema:
         Base.metadata.create_all(bind=engine)
     yield
@@ -44,7 +47,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.11.4",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -57,9 +60,34 @@ app.add_middleware(
 app.mount("/media", StaticFiles(directory=str(media_path)), name="media")
 
 
+@app.exception_handler(StaleDataError)
+async def stale_data_conflict(_: Request, __: StaleDataError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": (
+                "La operación cambió mientras se procesaba. "
+                "Recargue el estado actual y vuelva a intentarlo."
+            )
+        },
+    )
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_conflict(_: Request, __: IntegrityError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "La operación entró en conflicto con el estado actual"},
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "mily-zebra-api"}
+    return {
+        "status": "ok",
+        "service": "mily-zebra-api",
+        "version": APP_VERSION,
+    }
 
 
 app.include_router(router)
@@ -74,7 +102,10 @@ app.include_router(module_router)
 app.include_router(post_sale_router)
 app.include_router(store_router)
 app.include_router(commerce_router)
-app.include_router(accounting_router, dependencies=[Depends(require_enabled_module("accounting"))])
+app.include_router(
+    accounting_router,
+    dependencies=[Depends(require_enabled_module("accounting"))],
+)
 app.include_router(receivables_router)
 app.include_router(payables_router)
 app.include_router(banking_router)

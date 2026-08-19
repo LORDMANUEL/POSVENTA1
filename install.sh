@@ -57,7 +57,6 @@ if ! docker compose version >/dev/null 2>&1; then
   apt-get install -y docker-compose-v2
 fi
 
-# Redis recomienda memory overcommit para evitar fallos de persistencia bajo presión.
 printf 'vm.overcommit_memory=1\n' > /etc/sysctl.d/99-mily-zebra.conf
 sysctl -w vm.overcommit_memory=1 >/dev/null || true
 
@@ -65,8 +64,6 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
-# Nunca permita arrancar producción con secretos de ejemplo. Si siguen presentes,
-# se reemplazan sin alterar secretos ya configurados por el operador.
 if grep -q 'POSTGRES_PASSWORD=change-this-in-production' .env; then
   DB_PASSWORD="$(openssl rand -hex 24)"
   sed -i "s|^POSTGRES_PASSWORD=change-this-in-production|POSTGRES_PASSWORD=${DB_PASSWORD}|" .env
@@ -76,8 +73,15 @@ if grep -q 'JWT_SECRET=change-this-to-a-long-random-secret' .env; then
   JWT_SECRET_VALUE="$(openssl rand -hex 48)"
   sed -i "s|^JWT_SECRET=change-this-to-a-long-random-secret|JWT_SECRET=${JWT_SECRET_VALUE}|" .env
 fi
+if grep -q '^MZ_BOOTSTRAP_TOKEN=change-this-bootstrap-token' .env; then
+  BOOTSTRAP_TOKEN_VALUE="$(openssl rand -hex 32)"
+  sed -i "s|^MZ_BOOTSTRAP_TOKEN=change-this-bootstrap-token|MZ_BOOTSTRAP_TOKEN=${BOOTSTRAP_TOKEN_VALUE}|" .env
+elif ! grep -q '^MZ_BOOTSTRAP_TOKEN=' .env; then
+  BOOTSTRAP_TOKEN_VALUE="$(openssl rand -hex 32)"
+  echo "MZ_BOOTSTRAP_TOKEN=${BOOTSTRAP_TOKEN_VALUE}" >> .env
+fi
 
-if grep -Eq 'change-this-in-production|change-this-to-a-long-random-secret' .env; then
+if grep -Eq 'change-this-in-production|change-this-to-a-long-random-secret|change-this-bootstrap-token' .env; then
   echo "Quedaron secretos de ejemplo dentro de .env; instalación bloqueada." >&2
   exit 3
 fi
@@ -126,6 +130,10 @@ docker compose exec -T redis redis-cli ping | grep -q PONG
 docker compose exec -T api alembic current | grep -q 20260819_0010
 curl -fsS http://127.0.0.1:8080/ >/dev/null
 
+BOOTSTRAP_TOKEN="$(grep '^MZ_BOOTSTRAP_TOKEN=' .env | cut -d= -f2-)"
+printf '%s\n' "$BOOTSTRAP_TOKEN" > .bootstrap-token
+chmod 600 .bootstrap-token
+
 if [[ -n "$DOMAIN" ]]; then
   echo "Mily Zebra instalado: https://${DOMAIN}"
 else
@@ -133,7 +141,10 @@ else
   echo "Mily Zebra instalado: http://${IP:-IP-DEL-VPS}"
 fi
 
-echo "Abra /admin y use 'Primera instalación' para crear el propietario inicial."
+echo "Abra /admin y use 'Primera instalación'."
+echo "Código de primera instalación: ${BOOTSTRAP_TOKEN}"
+echo "También quedó guardado con permisos 600 en: ${ROOT_DIR}/.bootstrap-token"
+echo "Después de crear el propietario, el endpoint de bootstrap queda cerrado por estado de base de datos."
 echo "Backup completo (BD + fotos): sudo ./scripts/backup.sh"
 echo "Restore completo: consulte docs/MANUAL_INSTALACION.md"
 echo "Estado: docker compose ps"

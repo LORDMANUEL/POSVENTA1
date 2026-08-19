@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -73,7 +73,10 @@ class PurchaseOrder(Base):
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     lines: Mapped[list[PurchaseOrderLine]] = relationship(back_populates="purchase_order", cascade="all, delete-orphan")
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class PurchaseOrderLine(Base):
@@ -100,7 +103,10 @@ class StockTransfer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     lines: Mapped[list[StockTransferLine]] = relationship(back_populates="transfer", cascade="all, delete-orphan")
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class StockTransferLine(Base):
@@ -127,3 +133,6 @@ class Delivery(Base):
     proof_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}

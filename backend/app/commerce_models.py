@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -43,6 +43,7 @@ class Order(Base):
     branch_id: Mapped[str] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id", ondelete="RESTRICT"), index=True)
     idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tracking_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), nullable=False)
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
@@ -51,9 +52,12 @@ class Order(Base):
     delivery_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     lines: Mapped[list[OrderLine]] = relationship(back_populates="order", cascade="all, delete-orphan")
     payments: Mapped[list[Payment]] = relationship(back_populates="order", cascade="all, delete-orphan")
     reservations: Mapped[list[StockReservation]] = relationship(back_populates="order", cascade="all, delete-orphan")
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class OrderLine(Base):
@@ -79,7 +83,10 @@ class Payment(Base):
     status: Mapped[PaymentStatus] = mapped_column(Enum(PaymentStatus), nullable=False)
     external_reference: Mapped[str | None] = mapped_column(String(180), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     order: Mapped[Order] = relationship(back_populates="payments")
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class StockReservation(Base):

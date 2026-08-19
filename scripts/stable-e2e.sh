@@ -5,6 +5,15 @@ BASE_URL="${MZ_E2E_BASE_URL:-http://127.0.0.1}"
 API="${BASE_URL%/}/api"
 EMAIL="${MZ_E2E_EMAIL:-owner.e2e@milyzebra.test}"
 PASSWORD="${MZ_E2E_PASSWORD:-StableE2E-2026!}"
+BOOTSTRAP_TOKEN="${MZ_BOOTSTRAP_TOKEN:-}"
+
+if [[ -z "$BOOTSTRAP_TOKEN" && -f .env ]]; then
+  BOOTSTRAP_TOKEN="$(grep '^MZ_BOOTSTRAP_TOKEN=' .env | cut -d= -f2-)"
+fi
+if [[ -z "$BOOTSTRAP_TOKEN" ]]; then
+  echo 'MZ_BOOTSTRAP_TOKEN es obligatorio para el Stable Gate' >&2
+  exit 2
+fi
 
 json_get() {
   python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
@@ -25,10 +34,20 @@ for i in $(seq 1 90); do
   sleep 2
 done
 grep -q '"status":"ok"' /tmp/mz-health.json
+grep -q '"version":"0.12.1"' /tmp/mz-health.json
 
-BOOTSTRAP=$(request POST "$API/bootstrap" "{\"store_name\":\"Mily Zebra E2E\",\"branch_name\":\"Roatán E2E\",\"email\":\"$EMAIL\",\"full_name\":\"Propietario E2E\",\"password\":\"$PASSWORD\"}")
+BOOTSTRAP=$(curl -fsS -X POST "$API/bootstrap" \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H "X-Bootstrap-Token: $BOOTSTRAP_TOKEN" \
+  --data "{\"store_name\":\"Mily Zebra E2E\",\"store_slug\":\"mily-zebra\",\"branch_name\":\"Roatán E2E\",\"email\":\"$EMAIL\",\"full_name\":\"Propietario E2E\",\"password\":\"$PASSWORD\"}")
 TOKEN=$(printf '%s' "$BOOTSTRAP" | json_get access_token)
 [[ -n "$TOKEN" ]]
+
+BOOTSTRAP_AGAIN=$(curl -sS -o /tmp/mz-bootstrap-again.json -w '%{http_code}' -X POST "$API/bootstrap" \
+  -H 'Content-Type: application/json' -H "X-Bootstrap-Token: $BOOTSTRAP_TOKEN" \
+  --data "{\"store_name\":\"Otra\",\"branch_name\":\"Otra\",\"email\":\"other@example.com\",\"full_name\":\"Other\",\"password\":\"another-secure-password\"}")
+[[ "$BOOTSTRAP_AGAIN" == '409' ]]
 
 ME=$(request GET "$API/me" '' "$TOKEN")
 printf '%s' "$ME" | grep -q '"role":"owner"'
@@ -57,6 +76,12 @@ printf '%s' "$SALE1" | grep -q '"total":"249.00"'
 SALE2=$(request POST "$API/sales" "$SALE_BODY" "$TOKEN" "$SALE_KEY")
 SALE2_ID=$(printf '%s' "$SALE2" | json_get id)
 [[ "$SALE1_ID" == "$SALE2_ID" ]]
+
+IDEM_CONFLICT=$(curl -sS -o /tmp/mz-idem-conflict.json -w '%{http_code}' -X POST "$API/sales" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $SALE_KEY" \
+  --data "{\"payment_method\":\"cash\",\"lines\":[{\"product_id\":\"$PRODUCT_ID\",\"quantity\":\"2\"}]}")
+[[ "$IDEM_CONFLICT" == '409' ]]
 
 INVENTORY=$(request GET "$API/inventory" '' "$TOKEN")
 python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); pid=sys.argv[2]; row=next(r for r in rows if r["product_id"]==pid); assert row["quantity"]=="4.000", row' "$INVENTORY" "$PRODUCT_ID"
