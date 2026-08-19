@@ -22,7 +22,6 @@ class PlatformOperator(Base):
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
