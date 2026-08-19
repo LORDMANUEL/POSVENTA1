@@ -11,14 +11,15 @@ dependencies = [
   "pydantic-settings==2.10.1",
   "PyJWT==2.10.1",
   "pwdlib[argon2]==0.2.1",
-  "redis==6.4.0",
+  "python-multipart==0.0.20",
+  "redis==6.4.0"
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest==8.4.1",
   "httpx==0.28.1",
-  "ruff==0.12.9",
+  "ruff==0.12.9"
 ]
 
 [tool.pytest.ini_options]
