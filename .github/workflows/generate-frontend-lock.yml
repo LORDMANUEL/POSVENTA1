@@ -1,0 +1,35 @@
+name: Generate frontend lock
+
+on:
+  push:
+    branches:
+      - 'stabilize/v0.12.1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stabilize/v0.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Generate package-lock.json
+        working-directory: frontend
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit lockfile if changed
+        run: |
+          if git diff --quiet -- frontend/package-lock.json && git ls-files --error-unmatch frontend/package-lock.json >/dev/null 2>&1; then
+            echo 'Lockfile already current.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add frontend/package-lock.json
+          git commit -m 'build: lock frontend dependency graph'
+          git push origin HEAD:stabilize/v0.12.1
