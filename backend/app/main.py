@@ -13,8 +13,11 @@ from .config import get_settings
 from .content_api import ads_router, cms_router, marketing_router
 from .crm_api import crm_router, loyalty_router, notification_router
 from .db import Base, engine
+from .experience_api import music_router, visual_router
 from .finance_api import banking_router, payables_router, receivables_router
+from .fiscal_api import fiscal_router
 from .inventory_advanced_api import inventory_advanced_router
+from .knowledge_api import ai_router, rag_router
 from .module_api import module_router, require_enabled_module
 from .ops_api import ops_router
 from .people_api import attendance_router, hr_router, payroll_router
@@ -33,7 +36,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.10.0",
+    version="0.11.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -63,6 +66,7 @@ app.include_router(accounting_router, dependencies=[Depends(require_enabled_modu
 app.include_router(receivables_router)
 app.include_router(payables_router)
 app.include_router(banking_router)
+app.include_router(fiscal_router)
 app.include_router(crm_router)
 app.include_router(loyalty_router)
 app.include_router(notification_router)
@@ -74,4 +78,8 @@ app.include_router(marketing_router)
 app.include_router(ads_router)
 app.include_router(workflow_router)
 app.include_router(integration_router)
+app.include_router(music_router)
+app.include_router(visual_router)
+app.include_router(rag_router)
+app.include_router(ai_router)
 app.include_router(analytics_router)
