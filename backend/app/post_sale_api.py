@@ -1,12 +1,15 @@
+import json
 from decimal import Decimal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .cash_models import CashMovement
 from .db import get_db
-from .models import Product, Sale, SaleLine, User, UserRole
+from .models import CashSession, PrintJob, Product, Sale, SaleLine, User, UserRole
 from .post_sale_models import Refund, RefundStatus, ReturnLine, ReturnRecord
 from .security import require_roles
 from .services import AuditService, InventoryService, money
@@ -75,6 +78,23 @@ def sale_detail(db: Session, sale: Sale) -> dict:
     }
 
 
+def return_response(db: Session, record: ReturnRecord) -> dict:
+    refund = db.scalar(select(Refund).where(Refund.return_id == record.id).order_by(Refund.created_at.desc()))
+    if refund is None:
+        raise HTTPException(status_code=500, detail="Devolución sin reembolso asociado")
+    return {
+        "id": record.id,
+        "sale_id": record.sale_id,
+        "total": str(record.total),
+        "refund": {
+            "id": refund.id,
+            "method": refund.method,
+            "status": refund.status.value,
+            "amount": str(refund.amount),
+        },
+    }
+
+
 @post_sale_router.get("/sales")
 def list_sales_for_post_sale(
     limit: int = Query(default=50, ge=1, le=200),
@@ -133,12 +153,35 @@ def list_returns(
 @post_sale_router.post("/returns", status_code=201)
 def create_return(
     payload: ReturnIn,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=100)],
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*POST_SALE_WRITE_ROLES)),
 ) -> dict:
+    existing = db.scalar(
+        select(ReturnRecord).where(
+            ReturnRecord.tenant_id == user.tenant_id,
+            ReturnRecord.idempotency_key == idempotency_key,
+        )
+    )
+    if existing:
+        return return_response(db, existing)
+
     sale = db.scalar(select(Sale).where(Sale.id == payload.sale_id, Sale.tenant_id == user.tenant_id))
     if not sale:
         raise HTTPException(status_code=404, detail="Venta no encontrada")
+
+    cash_session = None
+    if sale.payment_method == "cash":
+        cash_session = db.scalar(
+            select(CashSession).where(
+                CashSession.tenant_id == user.tenant_id,
+                CashSession.branch_id == sale.branch_id,
+                CashSession.user_id == user.id,
+                CashSession.closed_at.is_(None),
+            )
+        )
+        if cash_session is None:
+            raise HTTPException(status_code=409, detail="Debe abrir caja antes de reembolsar una venta en efectivo")
 
     requested_ids = [line.sale_line_id for line in payload.lines]
     if len(requested_ids) != len(set(requested_ids)):
@@ -167,6 +210,7 @@ def create_return(
         branch_id=sale.branch_id,
         sale_id=sale.id,
         created_by_user_id=user.id,
+        idempotency_key=idempotency_key,
         reason=payload.reason,
         total=money(total),
     )
@@ -204,23 +248,62 @@ def create_return(
         status=refund_status,
     )
     db.add(refund)
+    db.flush()
+
+    if cash_session is not None:
+        db.add(
+            CashMovement(
+                tenant_id=user.tenant_id,
+                branch_id=sale.branch_id,
+                cash_session_id=cash_session.id,
+                actor_user_id=user.id,
+                movement_type="refund",
+                amount=-record.total,
+                reason=f"Reembolso en efectivo: {record.reason}",
+                reference_type="refund",
+                reference_id=refund.id,
+            )
+        )
+        receipt = "\n".join(
+            [
+                "MILY ZEBRA",
+                "DEVOLUCION / REEMBOLSO",
+                "-" * 32,
+                f"VENTA {sale.id[:8]}",
+                f"DEVOLUCION {record.id[:8]}",
+                f"TOTAL L {record.total}",
+                "PAGO EFECTIVO",
+            ]
+        )
+        db.add(
+            PrintJob(
+                tenant_id=user.tenant_id,
+                branch_id=sale.branch_id,
+                job_type="receipt",
+                payload=json.dumps({"text": receipt}, ensure_ascii=False),
+            )
+        )
+        db.add(
+            PrintJob(
+                tenant_id=user.tenant_id,
+                branch_id=sale.branch_id,
+                job_type="drawer",
+                payload="{}",
+            )
+        )
+
     AuditService.record(
         db,
         user,
         "return.created",
         "return",
         record.id,
-        {"sale_id": sale.id, "total": str(record.total), "refund_status": refund_status.value},
+        {
+            "sale_id": sale.id,
+            "total": str(record.total),
+            "refund_status": refund_status.value,
+            "idempotency_key": idempotency_key,
+        },
     )
     db.commit()
-    return {
-        "id": record.id,
-        "sale_id": sale.id,
-        "total": str(record.total),
-        "refund": {
-            "id": refund.id,
-            "method": refund.method,
-            "status": refund.status.value,
-            "amount": str(refund.amount),
-        },
-    }
+    return return_response(db, record)
