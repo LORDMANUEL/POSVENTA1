@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.db import Base
 
 # Import every model module so SQLAlchemy metadata is complete.
-from app import admin_models, commerce_models, models, ops_models, post_sale_models  # noqa: F401,E402
+from app import admin_models, cash_models, commerce_models, models, ops_models, post_sale_models  # noqa: F401,E402
 
 config = context.config
 if config.config_file_name is not None:
