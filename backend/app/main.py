@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import router
 from .config import get_settings
 from .db import Base, engine
+from .ops_api import ops_router
 
 settings = get_settings()
 
@@ -19,7 +20,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -37,3 +38,4 @@ def health() -> dict[str, str]:
 
 
 app.include_router(router)
+app.include_router(ops_router)
