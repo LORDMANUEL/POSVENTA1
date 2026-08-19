@@ -20,6 +20,13 @@ Unificar POS, caja, inventario, compras, ventas, ecommerce, clientes, CRM, repar
 - CI obligatorio antes de integrar a `main`.
 - Ningún módulo se marca terminado solo por tener tablas o pantalla: requiere backend, migración, permisos, auditoría, pruebas y flujo usable.
 
+## Documentación
+
+- `docs/MANUAL_INSTALACION.md` — instalación, actualización, backup, restore, diagnóstico y criterios de certificación.
+- `docs/MANUAL_OPERACION.md` — operación por rol y flujo de cada dominio ERP.
+- `docs/ARCHITECTURE.md` — arquitectura técnica.
+- `docs/ROADMAP.md` — fases y gates pendientes.
+
 ## Estructura
 
 ```text
@@ -29,7 +36,7 @@ agent/         agente local Windows/Linux para hardware
 desktop/       launchers Windows por rol
 infra/         Caddy, proxy y soporte
 scripts/       bootstrap, backup, restore y verificación
-docs/          arquitectura, alcance, fases y operación
+docs/          arquitectura, alcance, manuales y operación
 .github/       CI y construcción de ejecutables
 ```
 
@@ -52,6 +59,8 @@ sudo ./install.sh --domain tienda.midominio.com
 El instalador instala Docker cuando hace falta, crea secretos aleatorios, levanta PostgreSQL, Redis, API, frontend, almacenamiento persistente y Caddy. Con dominio, Caddy gestiona HTTPS y renovación automática.
 
 También existe `scripts/bootstrap-vps.sh` para automatizar clonación/actualización + instalación desde un servidor limpio.
+
+> Mientras el PR de desarrollo no esté certificado y fusionado, no utilice `main` como release productivo. Producción se promoverá únicamente con evidencia verde.
 
 ## Desarrollo
 
@@ -89,4 +98,4 @@ docker compose logs -f api
 
 ## Estado de integración
 
-La rama de desarrollo es la línea activa. `main` permanecerá estable hasta que CI, builds, E2E y gates externos aplicables estén verdes. Consulte `docs/ARCHITECTURE.md` y `docs/ROADMAP.md`.
+La rama de desarrollo es la línea activa. `main` permanecerá estable hasta que CI, builds, E2E y gates externos aplicables estén verdes. Consulte los manuales y el roadmap antes de instalar en producción.
