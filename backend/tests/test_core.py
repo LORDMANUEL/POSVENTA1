@@ -40,6 +40,7 @@ def test_bootstrap_login_and_product_flow(client, owner_headers) -> None:
 
     opened = client.post("/cash/open", headers=owner_headers, json={"opening_amount": "500.00"})
     assert opened.status_code == 201
+    cash_session_id = opened.json()["id"]
 
     sold = client.post(
         "/sales",
@@ -56,6 +57,19 @@ def test_bootstrap_login_and_product_flow(client, owner_headers) -> None:
     )
     assert repeated.status_code == 201
     assert repeated.json()["id"] == sold.json()["id"]
+
+    summary = client.get(f"/cash/{cash_session_id}/summary", headers=owner_headers)
+    assert summary.status_code == 200
+    assert summary.json()["expected_amount"] == "1398.00"
+    assert len(summary.json()["movements"]) == 1
+
+    closed = client.post(
+        f"/cash/{cash_session_id}/close",
+        headers=owner_headers,
+        json={"closing_amount": "1398.00"},
+    )
+    assert closed.status_code == 200
+    assert closed.json()["difference"] == "0.00"
 
     stock = client.get("/inventory", headers=owner_headers)
     assert stock.status_code == 200
