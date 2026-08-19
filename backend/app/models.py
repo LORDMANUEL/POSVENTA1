@@ -165,6 +165,7 @@ class SaleLine(Base):
     product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"), index=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     sale: Mapped[Sale] = relationship(back_populates="lines")
 
