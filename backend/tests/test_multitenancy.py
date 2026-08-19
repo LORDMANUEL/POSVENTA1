@@ -1,3 +1,9 @@
+from sqlalchemy import select
+
+from app.db import SessionLocal
+from app.models import User
+
+
 def test_platform_admin_can_create_second_tenant_and_login_by_slug(client, owner_headers) -> None:
     me = client.get('/me', headers=owner_headers)
     assert me.status_code == 200
@@ -107,3 +113,39 @@ def test_platform_admin_lists_tenants_without_exposing_owner_secrets(client, own
     assert row['storefront_path'] == '/?store=mily-zebra'
     assert 'password_hash' not in row
     assert 'bootstrap_token' not in row
+
+
+def test_deactivating_first_owner_does_not_transfer_platform_power(client, owner_headers) -> None:
+    first = client.get('/me', headers=owner_headers).json()
+    created = client.post(
+        '/ops/users',
+        headers=owner_headers,
+        json={
+            'email': 'replacement.owner@example.com',
+            'full_name': 'Replacement Owner',
+            'password': 'replacement-owner-password',
+            'role': 'owner',
+            'branch_id': first['branch_id'],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    with SessionLocal() as db:
+        original = db.scalar(select(User).where(User.id == first['id']))
+        original.active = False
+        db.commit()
+
+    replacement_login = client.post(
+        '/auth/login',
+        data={
+            'username': 'replacement.owner@example.com',
+            'password': 'replacement-owner-password',
+        },
+    )
+    assert replacement_login.status_code == 200, replacement_login.text
+    headers = {'Authorization': f"Bearer {replacement_login.json()['access_token']}"}
+    access = client.get('/platform/access', headers=headers)
+    assert access.status_code == 200
+    assert access.json()['platform_admin'] is False
+    forbidden = client.get('/platform/tenants', headers=headers)
+    assert forbidden.status_code == 403
