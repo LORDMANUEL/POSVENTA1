@@ -1,4 +1,26 @@
+def manager_headers(client, owner_headers) -> dict:
+    created = client.post(
+        "/ops/users",
+        headers=owner_headers,
+        json={
+            "email": "manager-count@example.com",
+            "full_name": "Manager Conteo",
+            "password": "secure-manager-password",
+            "role": "manager",
+            "branch_id": None,
+        },
+    )
+    assert created.status_code == 201, created.text
+    login = client.post(
+        "/auth/login",
+        data={"username": "manager-count@example.com", "password": "secure-manager-password"},
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
 def test_stock_count_replenishment_and_label_queue(client, owner_headers) -> None:
+    approver_headers = manager_headers(client, owner_headers)
     product = client.post(
         "/products",
         headers=owner_headers,
@@ -27,12 +49,19 @@ def test_stock_count_replenishment_and_label_queue(client, owner_headers) -> Non
         json={"note": "Conteo físico", "lines": [{"product_id": product_id, "counted_quantity": "3"}]},
     )
     assert count.status_code == 201
+    assert count.json()["status"] == "pending_approval"
 
-    approved = client.post(
+    self_approval = client.post(
         f"/inventory-advanced/counts/{count.json()['id']}/approve",
         headers=owner_headers,
     )
-    assert approved.status_code == 200
+    assert self_approval.status_code == 409
+
+    approved = client.post(
+        f"/inventory-advanced/counts/{count.json()['id']}/approve",
+        headers=approver_headers,
+    )
+    assert approved.status_code == 200, approved.text
     assert approved.json()["adjustments"] == 1
 
     stock = client.get("/inventory", headers=owner_headers).json()
