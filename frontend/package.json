@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test:logic": "node scripts/test-offline-sales.mjs && node scripts/test-navigation.mjs && node scripts/test-pwa-shell.mjs",
+    "test:logic": "node scripts/test-offline-sales.mjs && node scripts/test-navigation.mjs && node scripts/test-pwa-shell.mjs && node scripts/test-offline-snapshot.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
