@@ -20,6 +20,7 @@ from .commerce_models import (
 )
 from .config import get_settings
 from .db import get_db
+from .media_models import ProductMedia
 from .models import Branch, Product, StockBalance, Tenant, User, UserRole
 from .ops_models import Customer
 from .security import get_current_user, require_roles
@@ -95,8 +96,24 @@ def _serialize_order(order: Order, include_token: bool = False) -> dict:
 def public_catalog(slug: str, db: Session = Depends(get_db)) -> dict:
     tenant = _tenant_by_slug(db, slug)
     products = db.scalars(
-        select(Product).where(Product.tenant_id == tenant.id, Product.active.is_(True)).order_by(Product.category, Product.name)
+        select(Product)
+        .where(Product.tenant_id == tenant.id, Product.active.is_(True))
+        .order_by(Product.category, Product.name)
     ).all()
+    product_ids = [product.id for product in products]
+    primary_media: dict[str, str] = {}
+    if product_ids:
+        media_rows = db.scalars(
+            select(ProductMedia)
+            .where(
+                ProductMedia.tenant_id == tenant.id,
+                ProductMedia.product_id.in_(product_ids),
+                ProductMedia.primary.is_(True),
+            )
+            .order_by(ProductMedia.product_id, ProductMedia.position)
+        ).all()
+        for media in media_rows:
+            primary_media.setdefault(media.product_id, media.public_url)
     return {
         "store": {"name": tenant.name, "slug": tenant.slug},
         "products": [
@@ -109,6 +126,7 @@ def public_catalog(slug: str, db: Session = Depends(get_db)) -> dict:
                 "size": p.size,
                 "color": p.color,
                 "sale_price": str(p.sale_price),
+                "primary_image_url": primary_media.get(p.id),
             }
             for p in products
         ],
