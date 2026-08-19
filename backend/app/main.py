@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .admin_api import admin_router, device_router
 from .api import router
+from .commerce_api import commerce_router, store_router
 from .config import get_settings
 from .db import Base, engine
 from .ops_api import ops_router
@@ -15,6 +16,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Test/development convenience only. Production .env disables this and Alembic owns schema changes.
     if settings.auto_create_schema:
         Base.metadata.create_all(bind=engine)
     yield
@@ -22,7 +24,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -44,3 +46,5 @@ app.include_router(ops_router)
 app.include_router(admin_router)
 app.include_router(device_router)
 app.include_router(post_sale_router)
+app.include_router(store_router)
+app.include_router(commerce_router)
