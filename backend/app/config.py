@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     auto_create_schema: bool = True
     media_root: str = "/data/media"
     max_image_bytes: int = 10 * 1024 * 1024
+    ollama_url: str = ""
+    ollama_model: str = "qwen3:1.7b"
+    ai_timeout_seconds: int = 45
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
