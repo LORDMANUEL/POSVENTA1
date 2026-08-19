@@ -12,6 +12,7 @@ from app import (  # noqa: F401,E402
     admin_models,
     cash_models,
     commerce_models,
+    finance_models,
     media_models,
     models,
     module_registry,
