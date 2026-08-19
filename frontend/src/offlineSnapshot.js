@@ -1,5 +1,5 @@
 const PREFIX = 'mz_offline_snapshot:';
-const ALLOWED_PATHS = new Set(['/me', '/products', '/inventory']);
+const ALLOWED_PATHS = new Set(['/me', '/products', '/inventory', '/cash/current']);
 
 export function snapshotKey(path) {
   if (!ALLOWED_PATHS.has(path)) return null;
