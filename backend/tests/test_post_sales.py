@@ -19,6 +19,9 @@ def test_partial_return_restores_stock_and_prevents_over_return(client, owner_he
         json={"product_id": product_id, "quantity_delta": "5", "reason": "opening_stock"},
     ).status_code == 200
 
+    opened = client.post("/cash/open", headers=owner_headers, json={"opening_amount": "300.00"})
+    assert opened.status_code == 201
+
     sale = client.post(
         "/sales",
         headers={**owner_headers, "Idempotency-Key": "return-sale-0001"},
