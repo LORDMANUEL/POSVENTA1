@@ -1,8 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
-const STORE_SLUG = 'mily-zebra';
+const DEFAULT_STORE_SLUG = 'mily-zebra';
 const money = new Intl.NumberFormat('es-HN', { style: 'currency', currency: 'HNL' });
+
+export function storeSlugFromLocation(locationLike = globalThis.location) {
+  try {
+    const params = new URLSearchParams(locationLike?.search || '');
+    const slug = String(params.get('store') || '').trim().toLowerCase();
+    return slug || DEFAULT_STORE_SLUG;
+  } catch {
+    return DEFAULT_STORE_SLUG;
+  }
+}
+
+export function storeCartKey(slug) {
+  return `mz_store_cart:${slug}`;
+}
 
 async function publicRequest(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -38,7 +52,7 @@ function CartDrawer({ cart, onClose, onQty, onCheckout }) {
     <div className="sf-overlay" onClick={onClose}>
       <aside className="sf-cart" onClick={(event) => event.stopPropagation()}>
         <header>
-          <div><small>Tu selección</small><h2>Bolsa Mily</h2></div>
+          <div><small>Tu selección</small><h2>Bolsa</h2></div>
           <button onClick={onClose} aria-label="Cerrar bolsa">×</button>
         </header>
         <div className="sf-cart-lines">
@@ -66,7 +80,7 @@ function CartDrawer({ cart, onClose, onQty, onCheckout }) {
   );
 }
 
-function Checkout({ cart, onBack, onCompleted }) {
+function Checkout({ cart, storeSlug, onBack, onCompleted }) {
   const [form, setForm] = useState({
     full_name: '', email: '', phone: '', payment_method: 'manual_transfer', fulfillment_method: 'pickup', delivery_address: '',
   });
@@ -78,7 +92,7 @@ function Checkout({ cart, onBack, onCompleted }) {
     event.preventDefault();
     setBusy(true); setError('');
     try {
-      const order = await publicRequest(`/store/${STORE_SLUG}/checkout`, {
+      const order = await publicRequest(`/store/${storeSlug}/checkout`, {
         method: 'POST',
         headers: { 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({
@@ -118,21 +132,23 @@ function Checkout({ cart, onBack, onCompleted }) {
   );
 }
 
-function Confirmation({ order, onHome }) {
+function Confirmation({ order, storeName, onHome }) {
   return (
     <main className="sf-confirm">
       <div className="sf-confirm-mark">✓</div><p className="sf-kicker">Pedido recibido</p>
-      <h1>Gracias por elegir Mily Zebra</h1>
+      <h1>Gracias por elegir {storeName}</h1>
       <p>Pedido <strong>{order.id.slice(0, 8)}</strong> · estado <strong>{order.status.replaceAll('_', ' ')}</strong></p>
-      <div className="sf-confirm-card"><span>Total</span><strong>{money.format(Number(order.total))}</strong><small>Guarda este código de seguimiento. Se almacena únicamente en este navegador.</small><code>{order.tracking_token}</code></div>
+      <div className="sf-confirm-card"><span>Total</span><strong>{money.format(Number(order.total))}</strong><small>Guarda este código de seguimiento. Se almacena únicamente en este navegador y tienda.</small><code>{order.tracking_token}</code></div>
       <button className="sf-primary" onClick={onHome}>Volver al catálogo</button>
     </main>
   );
 }
 
 export default function Storefront() {
-  const [catalog, setCatalog] = useState({ store: { name: 'Mily Zebra' }, products: [] });
-  const [cart, setCart] = useState(() => { try { return JSON.parse(localStorage.getItem('mz_store_cart') || '[]'); } catch { return []; } });
+  const storeSlug = storeSlugFromLocation();
+  const cartKey = storeCartKey(storeSlug);
+  const [catalog, setCatalog] = useState({ store: { name: 'Mily Zebra', slug: storeSlug }, products: [] });
+  const [cart, setCart] = useState(() => { try { return JSON.parse(localStorage.getItem(cartKey) || '[]'); } catch { return []; } });
   const [category, setCategory] = useState('Todos');
   const [search, setSearch] = useState('');
   const [cartOpen, setCartOpen] = useState(false);
@@ -140,8 +156,8 @@ export default function Storefront() {
   const [order, setOrder] = useState(null);
   const [error, setError] = useState('');
 
-  useEffect(() => { publicRequest(`/store/${STORE_SLUG}/catalog`).then(setCatalog).catch((err) => setError(err.message)); }, []);
-  useEffect(() => { localStorage.setItem('mz_store_cart', JSON.stringify(cart)); }, [cart]);
+  useEffect(() => { publicRequest(`/store/${storeSlug}/catalog`).then(setCatalog).catch((err) => setError(err.message)); }, [storeSlug]);
+  useEffect(() => { localStorage.setItem(cartKey, JSON.stringify(cart)); }, [cart, cartKey]);
 
   const categories = useMemo(() => ['Todos', ...new Set(catalog.products.map((product) => product.category))], [catalog]);
   const filtered = useMemo(() => catalog.products.filter((product) => (
@@ -157,26 +173,34 @@ export default function Storefront() {
     setCartOpen(true);
   };
   const qty = (id, delta) => setCart((items) => items.map((item) => item.id === id ? { ...item, qty: item.qty + delta } : item).filter((item) => item.qty > 0));
-  const completed = (created) => { setOrder(created); localStorage.setItem(`mz_tracking_${created.id}`, created.tracking_token); setCart([]); setScreen('confirmation'); };
+  const completed = (created) => {
+    setOrder(created);
+    localStorage.setItem(`mz_tracking:${storeSlug}:${created.id}`, created.tracking_token);
+    setCart([]);
+    setScreen('confirmation');
+  };
+  const homeUrl = `/?store=${encodeURIComponent(storeSlug)}`;
+  const adminUrl = `/admin?tenant=${encodeURIComponent(storeSlug)}`;
+  const storeName = catalog.store?.name || 'Mily Zebra';
 
-  if (screen === 'checkout') return <Checkout cart={cart} onBack={() => setScreen('store')} onCompleted={completed} />;
-  if (screen === 'confirmation') return <Confirmation order={order} onHome={() => { setOrder(null); setScreen('store'); }} />;
+  if (screen === 'checkout') return <Checkout cart={cart} storeSlug={storeSlug} onBack={() => setScreen('store')} onCompleted={completed} />;
+  if (screen === 'confirmation') return <Confirmation order={order} storeName={storeName} onHome={() => { setOrder(null); setScreen('store'); }} />;
 
   return (
     <div className="sf-page">
-      <header className="sf-nav"><a className="sf-logo" href="/"><span>MZ</span><b>Mily Zebra</b></a><nav><a href="#coleccion">Colección</a><a href="#universo">Universo Mily</a><a href="/admin">Equipo</a></nav><button className="sf-bag" onClick={() => setCartOpen(true)}>Bolsa <span>{cart.reduce((sum, item) => sum + item.qty, 0)}</span></button></header>
+      <header className="sf-nav"><a className="sf-logo" href={homeUrl}><span>MZ</span><b>{storeName}</b></a><nav><a href="#coleccion">Colección</a><a href="#universo">Universo Mily</a><a href={adminUrl}>Equipo</a></nav><button className="sf-bag" onClick={() => setCartOpen(true)}>Bolsa <span>{cart.reduce((sum, item) => sum + item.qty, 0)}</span></button></header>
       <main>
-        <section className="sf-hero"><div className="sf-zebra-lines" /><div className="sf-hero-copy"><p className="sf-kicker">Mily Zebra · Roatán</p><h1>Tu estilo.<br/><em>Tu momento.</em></h1><p>Moda cómoda, femenina y fresca para sentirte segura siendo tú.</p><a className="sf-primary" href="#coleccion">Ver colección</a></div><div className="sf-hero-art"><div className="sf-heart">♥</div><div className="sf-model-card"><span>MILY</span><strong>ZEBRA</strong><small>Island · Pink · Everyday</small></div></div></section>
+        <section className="sf-hero"><div className="sf-zebra-lines" /><div className="sf-hero-copy"><p className="sf-kicker">{storeName} · tienda online</p><h1>Tu estilo.<br/><em>Tu momento.</em></h1><p>Moda cómoda, femenina y fresca para sentirte segura siendo tú.</p><a className="sf-primary" href="#coleccion">Ver colección</a></div><div className="sf-hero-art"><div className="sf-heart">♥</div><div className="sf-model-card"><span>MILY</span><strong>ZEBRA</strong><small>Island · Pink · Everyday</small></div></div></section>
         <section className="sf-marquee"><span>MILY BASICS ✦ PINK VIBES ✦ ISLAND MOOD ✦ MILY DETAILS ✦</span><span>MILY BASICS ✦ PINK VIBES ✦ ISLAND MOOD ✦ MILY DETAILS ✦</span></section>
         <section className="sf-collection" id="coleccion">
-          <div className="sf-section-head"><div><p className="sf-kicker">Encuentra tu favorito</p><h2>La colección Mily</h2></div><input placeholder="Buscar prendas o detalles…" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
+          <div className="sf-section-head"><div><p className="sf-kicker">Encuentra tu favorito</p><h2>La colección</h2></div><input placeholder="Buscar prendas o detalles…" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
           <div className="sf-filters">{categories.map((item) => <button className={category === item ? 'active' : ''} onClick={() => setCategory(item)} key={item}>{item}</button>)}</div>
           {error && <div className="sf-error">{error}</div>}
           <div className="sf-products">{filtered.map((product, index) => <article className="sf-product" key={product.id}><ProductImage product={product} tone={index} /><div className="sf-product-info"><small>{product.sku} · {product.size || 'Talla flexible'}</small><h3>{product.name}</h3><p>{product.description || `${product.color || 'Estilo Mily'} para combinar a tu manera.`}</p><footer><b>{money.format(Number(product.sale_price))}</b><button onClick={() => add(product)}>Agregar +</button></footer></div></article>)}</div>
         </section>
-        <section className="sf-universe" id="universo"><p className="sf-kicker">Universo Mily</p><h2>Segura. Cómoda. Única.</h2><div><article><span>01</span><h3>Mily Basics</h3><p>Prendas para todos los días: fáciles de combinar, cómodas y con personalidad.</p></article><article><span>02</span><h3>Island Mood</h3><p>Roatán inspira una línea fresca, luminosa y lista para el clima tropical.</p></article><article><span>03</span><h3>Mily Details</h3><p>Accesorios y belleza para terminar el look sin complicarlo.</p></article></div></section>
+        <section className="sf-universe" id="universo"><p className="sf-kicker">Universo Mily</p><h2>Segura. Cómoda. Única.</h2><div><article><span>01</span><h3>Mily Basics</h3><p>Prendas para todos los días: fáciles de combinar, cómodas y con personalidad.</p></article><article><span>02</span><h3>Island Mood</h3><p>Una línea fresca, luminosa y lista para el clima tropical.</p></article><article><span>03</span><h3>Mily Details</h3><p>Accesorios y belleza para terminar el look sin complicarlo.</p></article></div></section>
       </main>
-      <footer className="sf-footer"><div className="sf-logo"><span>MZ</span><b>Mily Zebra</b></div><p>Roatán, Islas de la Bahía · Honduras</p><p>© 2026 Mily Zebra</p></footer>
+      <footer className="sf-footer"><div className="sf-logo"><span>MZ</span><b>{storeName}</b></div><p>Honduras</p><p>© 2026 {storeName}</p></footer>
       {cartOpen && <CartDrawer cart={cart} onClose={() => setCartOpen(false)} onQty={qty} onCheckout={() => { setCartOpen(false); setScreen('checkout'); }} />}
     </div>
   );
