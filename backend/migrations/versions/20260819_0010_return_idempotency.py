@@ -76,6 +76,25 @@ def _add_version(bind, table: str) -> None:
     op.alter_column(table, "version", server_default=None)
 
 
+def _ensure_cost_snapshot(bind, table: str) -> None:
+    if "unit_cost" in _column_names(bind, table):
+        return
+    op.add_column(table, sa.Column("unit_cost", sa.Numeric(14, 2), nullable=True))
+    bind.execute(
+        sa.text(
+            f"""
+            UPDATE {table}
+            SET unit_cost = COALESCE(
+                (SELECT products.unit_cost FROM products WHERE products.id = {table}.product_id),
+                0
+            )
+            WHERE unit_cost IS NULL
+            """
+        )
+    )
+    op.alter_column(table, "unit_cost", existing_type=sa.Numeric(14, 2), nullable=False)
+
+
 def _ensure_platform_operators(bind) -> None:
     if "platform_operators" not in _table_names(bind):
         op.create_table(
@@ -161,6 +180,12 @@ def upgrade() -> None:
 
     _ensure_platform_operators(bind)
 
+    # Preserve the economic facts that existed when a sale/order was created.
+    # v0.12.0 did not store historical unit cost, so an upgrade can only backfill
+    # old rows from the best available product cost. New rows are exact snapshots.
+    _ensure_cost_snapshot(bind, "sale_lines")
+    _ensure_cost_snapshot(bind, "order_lines")
+
     # Payload fingerprints make idempotency semantic: the same key may replay
     # the same request, but may never silently represent different contents.
     _add_nullable_string(bind, "sales", "request_hash", 64)
@@ -244,6 +269,8 @@ def downgrade() -> None:
         ("return_records", "idempotency_key"),
         ("orders", "request_hash"),
         ("sales", "request_hash"),
+        ("order_lines", "unit_cost"),
+        ("sale_lines", "unit_cost"),
     ):
         if column in _column_names(bind, table):
             op.drop_column(table, column)
