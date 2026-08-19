@@ -3,6 +3,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.accounting_models import Account, JournalEntry, JournalLine
+from app.commerce_models import OrderLine
 from app.db import SessionLocal
 from app.models import Product, SaleLine
 
@@ -69,3 +70,59 @@ def test_return_reverses_historical_sale_cost_not_current_product_cost(client, o
 
     assert _journal_amount(f'SALE:{sale_id}', '5000', 'debit') == Decimal('100.00')
     assert _journal_amount(f"RETURN:{returned.json()['id']}", '5000', 'credit') == Decimal('100.00')
+
+
+def test_ecommerce_fulfillment_uses_checkout_cost_snapshot(client, owner_headers) -> None:
+    product = client.post(
+        '/products',
+        headers=owner_headers,
+        json={
+            'sku': 'HIST-WEB-001',
+            'name': 'Producto web costo histórico',
+            'unit_cost': '80.00',
+            'sale_price': '200.00',
+        },
+    )
+    assert product.status_code == 201
+    product_id = product.json()['id']
+    assert client.post(
+        '/inventory/movements',
+        headers=owner_headers,
+        json={'product_id': product_id, 'quantity_delta': '2', 'reason': 'opening_stock'},
+    ).status_code == 200
+
+    checkout = client.post(
+        '/store/mily-zebra/checkout',
+        headers={'Idempotency-Key': 'historical-web-order'},
+        json={
+            'full_name': 'Cliente histórico',
+            'email': 'historical.web@example.com',
+            'payment_method': 'manual_transfer',
+            'fulfillment_method': 'pickup',
+            'lines': [{'product_id': product_id, 'quantity': '1'}],
+        },
+    )
+    assert checkout.status_code == 201, checkout.text
+    order_id = checkout.json()['id']
+
+    with SessionLocal() as db:
+        line = db.scalar(select(OrderLine).where(OrderLine.order_id == order_id))
+        assert line is not None
+        assert Decimal(line.unit_cost) == Decimal('80.00')
+        row = db.scalar(select(Product).where(Product.id == product_id))
+        row.unit_cost = Decimal('140.00')
+        db.commit()
+
+    paid = client.post(
+        f'/commerce/orders/{order_id}/mark-paid',
+        headers=owner_headers,
+        json={'external_reference': 'HIST-WEB-PAY-001'},
+    )
+    assert paid.status_code == 200, paid.text
+    fulfilled = client.post(
+        f'/commerce/orders/{order_id}/fulfill',
+        headers=owner_headers,
+    )
+    assert fulfilled.status_code == 200, fulfilled.text
+
+    assert _journal_amount(f'ORDER-COGS:{order_id}', '5000', 'debit') == Decimal('80.00')
