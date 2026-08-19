@@ -8,7 +8,7 @@ async function expectOwnerSession(page) {
   await expect(page.locator('.user-card').getByText('owner', { exact: true })).toBeVisible();
 }
 
-test('admin WebView/PWA survives offline reload, syncs sale and processes return', async ({ page, context }) => {
+test('admin WebView/PWA survives offline reload, recovers cash, syncs sale and processes return', async ({ page, context }) => {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(String(error)));
 
@@ -32,20 +32,25 @@ test('admin WebView/PWA survives offline reload, syncs sale and processes return
   await page.getByLabel('Fondo inicial').fill('50');
   await page.getByRole('button', { name: 'Abrir caja' }).click();
   await expect(page.getByText('Caja abierta correctamente')).toBeVisible();
+  await expect(page.getByText(/Sesión .* activa/)).toBeVisible();
 
   const cached = await page.evaluate(() => ({
     me: Boolean(localStorage.getItem('mz_offline_snapshot:/me')),
     products: Boolean(localStorage.getItem('mz_offline_snapshot:/products')),
     inventory: Boolean(localStorage.getItem('mz_offline_snapshot:/inventory')),
+    cash: Boolean(localStorage.getItem('mz_offline_snapshot:/cash/current')),
     token: Boolean(localStorage.getItem('mz_token')),
   }));
-  expect(cached).toEqual({ me: true, products: true, inventory: true, token: true });
+  expect(cached).toEqual({ me: true, products: true, inventory: true, cash: true, token: true });
 
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.locator('#mz-connectivity-banner')).toContainText('Modo sin conexión');
   await expectOwnerSession(page);
   await expect(page.getByText('Modo offline', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Caja' }).click();
+  await expect(page.getByText(/Sesión .* activa/)).toBeVisible();
 
   await page.getByRole('button', { name: 'Punto de venta' }).click();
   await page.getByRole('button', { name: /Blusa E2E/ }).first().click();
@@ -71,6 +76,13 @@ test('admin WebView/PWA survives offline reload, syncs sale and processes return
   await page.getByRole('button', { name: 'Registrar devolución' }).click();
   await expect(page.getByText(/Devolución registrada por/)).toBeVisible({ timeout: 10000 });
   await expect(page.getByText(/Reembolso: completed/)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Caja' }).click();
+  await expect(page.getByText(/Sesión .* activa/)).toBeVisible();
+  await page.getByLabel('Efectivo contado').fill('50');
+  await page.getByRole('button', { name: 'Cerrar caja' }).click();
+  await expect(page.getByText('Caja cerrada y auditada')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Abrir caja' })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });
