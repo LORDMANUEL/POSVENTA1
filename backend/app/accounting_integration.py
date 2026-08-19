@@ -315,18 +315,12 @@ class AccountingIntegrationService:
         payment_method: str,
     ) -> JournalEntry | None:
         revenue = _money(Decimal(record.total))
-        cost = Decimal("0")
-        for sale_line, quantity, _line_total in prepared:
-            product = db.scalar(
-                select(Product).where(
-                    Product.id == sale_line.product_id,
-                    Product.tenant_id == user.tenant_id,
-                )
+        cost = _money(
+            sum(
+                (Decimal(sale_line.unit_cost) * Decimal(quantity) for sale_line, quantity, _ in prepared),
+                Decimal("0"),
             )
-            if product is None:
-                raise HTTPException(status_code=404, detail="Producto de devolución no encontrado")
-            cost += Decimal(product.unit_cost) * Decimal(quantity)
-        cost = _money(cost)
+        )
         settlement_account = "1100" if payment_method == "cash" else "1110"
         lines: list[tuple[str, Decimal, Decimal, str]] = [
             ("4010", revenue, Decimal("0"), "Devolución sobre venta"),
@@ -381,18 +375,12 @@ class AccountingIntegrationService:
         user: User,
         order,
     ) -> JournalEntry | None:
-        cost = Decimal("0")
-        for line in order.lines:
-            product = db.scalar(
-                select(Product).where(
-                    Product.id == line.product_id,
-                    Product.tenant_id == user.tenant_id,
-                )
+        cost = _money(
+            sum(
+                (Decimal(line.unit_cost) * Decimal(line.quantity) for line in order.lines),
+                Decimal("0"),
             )
-            if product is None:
-                raise HTTPException(status_code=404, detail="Producto de pedido no encontrado")
-            cost += Decimal(product.unit_cost) * Decimal(line.quantity)
-        cost = _money(cost)
+        )
         if cost <= 0:
             return None
         return cls._post(

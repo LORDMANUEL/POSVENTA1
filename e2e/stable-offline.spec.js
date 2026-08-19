@@ -10,12 +10,14 @@ async function expectOwnerSession(page) {
 
 async function offlineQueueCount(page) {
   return page.evaluate(async () => new Promise((resolve, reject) => {
-    const request = indexedDB.open('mily-zebra-pos-offline', 1);
+    const scope = localStorage.getItem('mz_tenant_id');
+    if (!scope) return reject(new Error('tenant scope missing'));
+    const request = indexedDB.open('mily-zebra-pos-offline', 2);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
-      const tx = db.transaction('sales', 'readonly');
-      const count = tx.objectStore('sales').count();
+      const tx = db.transaction('sales_by_tenant', 'readonly');
+      const count = tx.objectStore('sales_by_tenant').index('tenantScope').count(scope);
       count.onsuccess = () => resolve(count.result);
       count.onerror = () => reject(count.error);
     };
@@ -48,14 +50,19 @@ test('admin WebView/PWA survives offline reload, recovers cash, syncs sale and p
   await expect(page.getByText('Caja abierta correctamente')).toBeVisible();
   await expect(page.getByText(/Sesión .* activa/)).toBeVisible();
 
-  const cached = await page.evaluate(() => ({
-    me: Boolean(localStorage.getItem('mz_offline_snapshot:/me')),
-    products: Boolean(localStorage.getItem('mz_offline_snapshot:/products')),
-    inventory: Boolean(localStorage.getItem('mz_offline_snapshot:/inventory')),
-    cash: Boolean(localStorage.getItem('mz_offline_snapshot:/cash/current')),
-    token: Boolean(localStorage.getItem('mz_token')),
-  }));
-  expect(cached).toEqual({ me: true, products: true, inventory: true, cash: true, token: true });
+  const cached = await page.evaluate(() => {
+    const tenant = localStorage.getItem('mz_tenant_id');
+    const prefix = `mz_offline_snapshot:v2:${tenant}:`;
+    return {
+      tenant: Boolean(tenant),
+      me: Boolean(localStorage.getItem(`${prefix}/me`)),
+      products: Boolean(localStorage.getItem(`${prefix}/products`)),
+      inventory: Boolean(localStorage.getItem(`${prefix}/inventory`)),
+      cash: Boolean(localStorage.getItem(`${prefix}/cash/current`)),
+      token: Boolean(localStorage.getItem('mz_token')),
+    };
+  });
+  expect(cached).toEqual({ tenant: true, me: true, products: true, inventory: true, cash: true, token: true });
 
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -100,6 +107,45 @@ test('admin WebView/PWA survives offline reload, recovers cash, syncs sale and p
   await expect(page.getByRole('button', { name: 'Abrir caja' })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
+});
+
+test('tenant-qualified admin URL clears another tenant session before login', async ({ page }) => {
+  await page.goto(`${BASE}/admin`, { waitUntil: 'networkidle' });
+  await page.getByLabel('Correo').fill(EMAIL);
+  await page.getByLabel('Contraseña').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Entrar' }).click();
+  await expectOwnerSession(page);
+  const firstTenant = await page.evaluate(() => localStorage.getItem('mz_tenant_id'));
+  expect(firstTenant).toBeTruthy();
+
+  await page.goto(`${BASE}/admin?tenant=mily-zebra-sps-e2e`, { waitUntil: 'networkidle' });
+  await expect(page.getByRole('button', { name: 'Entrar' })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('mz_token'))).toBeNull();
+
+  await page.getByLabel('Correo').fill('owner.sps.e2e@milyzebra.test');
+  await page.getByLabel('Contraseña').fill('SecondTenantE2E-2026!');
+  await page.getByRole('button', { name: 'Entrar' }).click();
+  await expectOwnerSession(page);
+  const second = await page.evaluate(async () => {
+    const token = localStorage.getItem('mz_token');
+    const tenantId = localStorage.getItem('mz_tenant_id');
+    const access = await fetch('/api/platform/access', { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+    return { tenantId, platformAdmin: access.platform_admin, slug: localStorage.getItem('mz_tenant_slug') };
+  });
+  expect(second.tenantId).toBeTruthy();
+  expect(second.tenantId).not.toBe(firstTenant);
+  expect(second.platformAdmin).toBe(false);
+  expect(second.slug).toBe('mily-zebra-sps-e2e');
+});
+
+test('second tenant storefront resolves its own catalog and admin route', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(String(error)));
+  await page.goto(`${BASE}/?store=mily-zebra-sps-e2e`, { waitUntil: 'networkidle' });
+  await expect(page.getByText('Mily Zebra SPS E2E', { exact: false }).first()).toBeVisible();
+  await expect(page.getByText('Producto tenant dos', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Equipo' })).toHaveAttribute('href', '/admin?tenant=mily-zebra-sps-e2e');
+  expect(errors).toEqual([]);
 });
 
 test('public storefront renders without browser errors', async ({ page }) => {

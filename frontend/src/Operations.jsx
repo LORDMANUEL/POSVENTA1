@@ -92,14 +92,56 @@ export function UsersDevicesView() {
   const [userForm, setUserForm] = useState({ email: '', full_name: '', password: '', role: 'cashier', branch_id: '' });
   const [deviceForm, setDeviceForm] = useState({ branch_id: '', device_id: '', name: '' });
   const [deviceToken, setDeviceToken] = useState(null);
+  const [platformAdmin, setPlatformAdmin] = useState(false);
+  const [tenants, setTenants] = useState([]);
+  const [tenantMessage, setTenantMessage] = useState('');
+  const [tenantError, setTenantError] = useState('');
+  const [tenantForm, setTenantForm] = useState({
+    store_name: '',
+    store_slug: '',
+    branch_name: 'Principal',
+    branch_code: 'MAIN-01',
+    owner_email: '',
+    owner_full_name: '',
+    owner_password: '',
+  });
+
+  const loadPlatform = async () => {
+    const access = await api.request('/platform/access');
+    setPlatformAdmin(Boolean(access.platform_admin));
+    if (access.platform_admin) setTenants(await api.request('/platform/tenants'));
+    else setTenants([]);
+  };
+
   const load = async () => {
     const [userRows, deviceRows, branchRows] = await Promise.all([api.request('/ops/users'), api.request('/admin/devices'), api.request('/admin/branches')]);
     setUsers(userRows); setDevices(deviceRows); setBranches(branchRows);
     if (!userForm.branch_id && branchRows[0]) setUserForm((f) => ({ ...f, branch_id: branchRows[0].id }));
     if (!deviceForm.branch_id && branchRows[0]) setDeviceForm((f) => ({ ...f, branch_id: branchRows[0].id }));
+    await loadPlatform();
   };
+
   useEffect(() => { load(); }, []);
   const createUser = async (event) => { event.preventDefault(); await api.request('/ops/users', { method: 'POST', body: JSON.stringify(userForm) }); setUserForm((f) => ({ ...f, email: '', full_name: '', password: '' })); await load(); };
   const enroll = async (event) => { event.preventDefault(); const result = await api.request('/admin/devices/enroll', { method: 'POST', body: JSON.stringify(deviceForm) }); setDeviceToken(result); setDeviceForm((f) => ({ ...f, device_id: '', name: '' })); await load(); };
-  return <div className="two-panels"><section className="panel"><SectionTitle eyebrow="Seguridad" title="Usuarios" /><form className="stack" onSubmit={createUser}><input type="email" required placeholder="Correo" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} /><input required placeholder="Nombre" value={userForm.full_name} onChange={(e) => setUserForm({ ...userForm, full_name: e.target.value })} /><input type="password" minLength="10" required placeholder="Contraseña temporal" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} /><select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}>{['admin','manager','cashier','sales','warehouse','driver','auditor','support'].map((role) => <option key={role}>{role}</option>)}</select><select value={userForm.branch_id} onChange={(e) => setUserForm({ ...userForm, branch_id: e.target.value })}>{branches.map((b) => <option value={b.id} key={b.id}>{b.name}</option>)}</select><button className="primary">Crear usuario</button></form><div className="product-list">{users.map((u) => <div key={u.id}><span><strong>{u.full_name}</strong><small>{u.email}</small></span><b>{u.role}</b></div>)}</div></section><section className="panel"><SectionTitle eyebrow="Hardware" title="Dispositivos" /><form className="stack" onSubmit={enroll}><select value={deviceForm.branch_id} onChange={(e) => setDeviceForm({ ...deviceForm, branch_id: e.target.value })}>{branches.map((b) => <option value={b.id} key={b.id}>{b.name}</option>)}</select><input required placeholder="ID del equipo, ej. POS-RTN-01" value={deviceForm.device_id} onChange={(e) => setDeviceForm({ ...deviceForm, device_id: e.target.value })} /><input required placeholder="Nombre visible" value={deviceForm.name} onChange={(e) => setDeviceForm({ ...deviceForm, name: e.target.value })} /><button className="primary">Enrolar agente</button></form>{deviceToken && <div className="token-box"><strong>Token mostrado una sola vez</strong><code>{deviceToken.token}</code><small>Configure MZ_AGENT_DEVICE_ID={deviceToken.device_id} y MZ_AGENT_TOKEN con este valor.</small></div>}<div className="product-list">{devices.map((d) => <div key={d.id}><span><strong>{d.name}</strong><small>{d.device_id}</small></span><b>{d.last_seen_at ? 'online/registrado' : 'sin heartbeat'}</b></div>)}</div></section></div>;
+  const createTenant = async (event) => {
+    event.preventDefault();
+    setTenantMessage(''); setTenantError('');
+    try {
+      const result = await api.request('/platform/tenants', { method: 'POST', body: JSON.stringify(tenantForm) });
+      setTenantMessage(`Empresa ${result.tenant.name} creada. Acceso: ${result.admin_login_path}`);
+      setTenantForm({ store_name: '', store_slug: '', branch_name: 'Principal', branch_code: 'MAIN-01', owner_email: '', owner_full_name: '', owner_password: '' });
+      await loadPlatform();
+    } catch (error) {
+      setTenantError(error.message);
+    }
+  };
+
+  return <div className="stack">
+    <div className="two-panels">
+      <section className="panel"><SectionTitle eyebrow="Seguridad" title="Usuarios" /><form className="stack" onSubmit={createUser}><input type="email" required placeholder="Correo" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} /><input required placeholder="Nombre" value={userForm.full_name} onChange={(e) => setUserForm({ ...userForm, full_name: e.target.value })} /><input type="password" minLength="10" required placeholder="Contraseña temporal" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} /><select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}>{['admin','manager','cashier','sales','warehouse','driver','auditor','support'].map((role) => <option key={role}>{role}</option>)}</select><select value={userForm.branch_id} onChange={(e) => setUserForm({ ...userForm, branch_id: e.target.value })}>{branches.map((b) => <option value={b.id} key={b.id}>{b.name}</option>)}</select><button className="primary">Crear usuario</button></form><div className="product-list">{users.map((u) => <div key={u.id}><span><strong>{u.full_name}</strong><small>{u.email}</small></span><b>{u.role}</b></div>)}</div></section>
+      <section className="panel"><SectionTitle eyebrow="Hardware" title="Dispositivos" /><form className="stack" onSubmit={enroll}><select value={deviceForm.branch_id} onChange={(e) => setDeviceForm({ ...deviceForm, branch_id: e.target.value })}>{branches.map((b) => <option value={b.id} key={b.id}>{b.name}</option>)}</select><input required placeholder="ID del equipo, ej. POS-RTN-01" value={deviceForm.device_id} onChange={(e) => setDeviceForm({ ...deviceForm, device_id: e.target.value })} /><input required placeholder="Nombre visible" value={deviceForm.name} onChange={(e) => setDeviceForm({ ...deviceForm, name: e.target.value })} /><button className="primary">Enrolar agente</button></form>{deviceToken && <div className="token-box"><strong>Token mostrado una sola vez</strong><code>{deviceToken.token}</code><small>Configure MZ_AGENT_DEVICE_ID={deviceToken.device_id} y MZ_AGENT_TOKEN con este valor.</small></div>}<div className="product-list">{devices.map((d) => <div key={d.id}><span><strong>{d.name}</strong><small>{d.device_id}</small></span><b>{d.last_seen_at ? 'online/registrado' : 'sin heartbeat'}</b></div>)}</div></section>
+    </div>
+    {platformAdmin && <section className="panel"><SectionTitle eyebrow="Plataforma" title="Empresas / tenants" /><p className="muted">Cada empresa mantiene usuarios, sucursales, inventario, caja y finanzas aislados. El propietario entra por la misma PWA usando la URL asignada.</p><form className="grid-form" onSubmit={createTenant}><input required placeholder="Nombre de empresa" value={tenantForm.store_name} onChange={(e) => setTenantForm({ ...tenantForm, store_name: e.target.value })} /><input required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="Identificador: tienda-sps" value={tenantForm.store_slug} onChange={(e) => setTenantForm({ ...tenantForm, store_slug: e.target.value.toLowerCase() })} /><input required placeholder="Sucursal inicial" value={tenantForm.branch_name} onChange={(e) => setTenantForm({ ...tenantForm, branch_name: e.target.value })} /><input required placeholder="Código sucursal" value={tenantForm.branch_code} onChange={(e) => setTenantForm({ ...tenantForm, branch_code: e.target.value.toUpperCase() })} /><input type="email" required placeholder="Correo propietario" value={tenantForm.owner_email} onChange={(e) => setTenantForm({ ...tenantForm, owner_email: e.target.value })} /><input required placeholder="Nombre propietario" value={tenantForm.owner_full_name} onChange={(e) => setTenantForm({ ...tenantForm, owner_full_name: e.target.value })} /><input type="password" minLength="10" required placeholder="Contraseña inicial" value={tenantForm.owner_password} onChange={(e) => setTenantForm({ ...tenantForm, owner_password: e.target.value })} /><button className="primary">Crear empresa aislada</button></form>{tenantMessage && <div className="notice">{tenantMessage}</div>}{tenantError && <div className="error">{tenantError}</div>}<div className="product-list">{tenants.map((tenant) => <div key={tenant.id}><span><strong>{tenant.name}</strong><small>{tenant.slug} · {tenant.branch_count} sucursal(es)</small></span><code>{tenant.admin_login_path}</code></div>)}</div></section>}
+  </div>;
 }

@@ -343,6 +343,7 @@ class SalesService:
                     product_id=product.id,
                     quantity=quantity,
                     unit_price=product.sale_price,
+                    unit_cost=product.unit_cost,
                     line_total=line_total,
                 )
             )
