@@ -8,6 +8,7 @@ from .api import router
 from .config import get_settings
 from .db import Base, engine
 from .ops_api import ops_router
+from .post_sale_api import post_sale_router
 
 settings = get_settings()
 
@@ -21,7 +22,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -42,3 +43,4 @@ app.include_router(router)
 app.include_router(ops_router)
 app.include_router(admin_router)
 app.include_router(device_router)
+app.include_router(post_sale_router)
