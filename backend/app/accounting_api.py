@@ -51,6 +51,40 @@ def validate_lines(lines: list[JournalLineIn]) -> tuple[Decimal, Decimal]:
     return debit, credit
 
 
+def _posted_balances(db: Session, tenant_id: str) -> list[dict]:
+    rows = db.execute(
+        select(
+            Account.id,
+            Account.code,
+            Account.name,
+            Account.account_type,
+            func.coalesce(func.sum(JournalLine.debit), 0),
+            func.coalesce(func.sum(JournalLine.credit), 0),
+        )
+        .join(JournalLine, JournalLine.account_id == Account.id, isouter=True)
+        .join(JournalEntry, JournalEntry.id == JournalLine.journal_entry_id, isouter=True)
+        .where(Account.tenant_id == tenant_id)
+        .where((JournalEntry.status == "posted") | (JournalEntry.id.is_(None)))
+        .group_by(Account.id, Account.code, Account.name, Account.account_type)
+        .order_by(Account.code)
+    ).all()
+    return [
+        {
+            "account_id": row[0],
+            "code": row[1],
+            "name": row[2],
+            "account_type": row[3],
+            "debit": Decimal(row[4]),
+            "credit": Decimal(row[5]),
+        }
+        for row in rows
+    ]
+
+
+def _money_text(value: Decimal) -> str:
+    return format(value.quantize(Decimal("0.01")), ".2f")
+
+
 @accounting_router.get("/accounts")
 def list_accounts(
     db: Session = Depends(get_db),
@@ -58,8 +92,15 @@ def list_accounts(
 ) -> list[dict]:
     rows = db.scalars(select(Account).where(Account.tenant_id == user.tenant_id).order_by(Account.code)).all()
     return [
-        {"id": row.id, "code": row.code, "name": row.name, "account_type": row.account_type,
-         "parent_id": row.parent_id, "active": row.active, "system": row.system}
+        {
+            "id": row.id,
+            "code": row.code,
+            "name": row.name,
+            "account_type": row.account_type,
+            "parent_id": row.parent_id,
+            "active": row.active,
+            "system": row.system,
+        }
         for row in rows
     ]
 
@@ -98,14 +139,18 @@ def create_entry(
         )
     ):
         raise HTTPException(status_code=409, detail="Referencia contable ya registrada")
-
     account_ids = {line.account_id for line in payload.lines}
-    existing = set(db.scalars(
-        select(Account.id).where(Account.tenant_id == user.tenant_id, Account.id.in_(account_ids), Account.active.is_(True))
-    ).all())
+    existing = set(
+        db.scalars(
+            select(Account.id).where(
+                Account.tenant_id == user.tenant_id,
+                Account.id.in_(account_ids),
+                Account.active.is_(True),
+            )
+        ).all()
+    )
     if existing != account_ids:
         raise HTTPException(status_code=422, detail="Una o más cuentas no existen o están inactivas")
-
     entry = JournalEntry(
         tenant_id=user.tenant_id,
         reference=payload.reference,
@@ -128,7 +173,9 @@ def post_entry(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
 ) -> dict:
-    entry = db.scalar(select(JournalEntry).where(JournalEntry.id == entry_id, JournalEntry.tenant_id == user.tenant_id))
+    entry = db.scalar(
+        select(JournalEntry).where(JournalEntry.id == entry_id, JournalEntry.tenant_id == user.tenant_id)
+    )
     if not entry:
         raise HTTPException(status_code=404, detail="Asiento no encontrado")
     if entry.status == "posted":
@@ -151,26 +198,72 @@ def trial_balance(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
 ) -> list[dict]:
-    rows = db.execute(
-        select(
-            Account.id,
-            Account.code,
-            Account.name,
-            Account.account_type,
-            func.coalesce(func.sum(JournalLine.debit), 0),
-            func.coalesce(func.sum(JournalLine.credit), 0),
-        )
-        .join(JournalLine, JournalLine.account_id == Account.id, isouter=True)
-        .join(JournalEntry, JournalEntry.id == JournalLine.journal_entry_id, isouter=True)
-        .where(Account.tenant_id == user.tenant_id)
-        .where((JournalEntry.status == "posted") | (JournalEntry.id.is_(None)))
-        .group_by(Account.id, Account.code, Account.name, Account.account_type)
-        .order_by(Account.code)
-    ).all()
     return [
         {
-            "account_id": row[0], "code": row[1], "name": row[2], "account_type": row[3],
-            "debit": str(row[4]), "credit": str(row[5]), "balance": str(Decimal(row[4]) - Decimal(row[5])),
+            **row,
+            "debit": _money_text(row["debit"]),
+            "credit": _money_text(row["credit"]),
+            "balance": _money_text(row["debit"] - row["credit"]),
         }
-        for row in rows
+        for row in _posted_balances(db, user.tenant_id)
     ]
+
+
+@accounting_router.get("/income-statement")
+def income_statement(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
+) -> dict:
+    balances = _posted_balances(db, user.tenant_id)
+    income_lines = []
+    expense_lines = []
+    income_total = Decimal("0")
+    expense_total = Decimal("0")
+    for row in balances:
+        if row["account_type"] == "income":
+            amount = row["credit"] - row["debit"]
+            income_total += amount
+            income_lines.append({"account_id": row["account_id"], "code": row["code"], "name": row["name"], "amount": _money_text(amount)})
+        elif row["account_type"] == "expense":
+            amount = row["debit"] - row["credit"]
+            expense_total += amount
+            expense_lines.append({"account_id": row["account_id"], "code": row["code"], "name": row["name"], "amount": _money_text(amount)})
+    return {
+        "income": income_lines,
+        "expenses": expense_lines,
+        "total_income": _money_text(income_total),
+        "total_expenses": _money_text(expense_total),
+        "net_income": _money_text(income_total - expense_total),
+        "basis": "posted_entries",
+    }
+
+
+@accounting_router.get("/balance-sheet")
+def balance_sheet(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
+) -> dict:
+    balances = _posted_balances(db, user.tenant_id)
+    sections: dict[str, list[dict]] = {"assets": [], "liabilities": [], "equity": []}
+    totals = {"assets": Decimal("0"), "liabilities": Decimal("0"), "equity": Decimal("0")}
+    mapping = {"asset": "assets", "liability": "liabilities", "equity": "equity"}
+    for row in balances:
+        section = mapping.get(row["account_type"])
+        if not section:
+            continue
+        amount = row["debit"] - row["credit"] if row["account_type"] == "asset" else row["credit"] - row["debit"]
+        totals[section] += amount
+        sections[section].append({"account_id": row["account_id"], "code": row["code"], "name": row["name"], "amount": _money_text(amount)})
+    retained_result = Decimal(income_statement(db, user)["net_income"])
+    equity_with_result = totals["equity"] + retained_result
+    return {
+        **sections,
+        "current_result": _money_text(retained_result),
+        "total_assets": _money_text(totals["assets"]),
+        "total_liabilities": _money_text(totals["liabilities"]),
+        "total_equity_before_result": _money_text(totals["equity"]),
+        "total_equity_with_result": _money_text(equity_with_result),
+        "liabilities_plus_equity": _money_text(totals["liabilities"] + equity_with_result),
+        "difference": _money_text(totals["assets"] - totals["liabilities"] - equity_with_result),
+        "basis": "posted_entries",
+    }
