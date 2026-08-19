@@ -18,6 +18,7 @@ import {
 } from './ErpModules';
 import ModuleSettings from './ModuleSettings';
 import CatalogImportTools from './CatalogImportTools';
+import OfflineSalesStatus, { submitSaleResilient } from './OfflineSalesStatus';
 
 const money = new Intl.NumberFormat('es-HN', { style: 'currency', currency: 'HNL' });
 const queryMode = new URLSearchParams(window.location.search).get('mode');
@@ -85,12 +86,20 @@ function Pos({ products, refresh }) {
   const total = cart.reduce((sum, item) => sum + Number(item.product.sale_price) * item.qty, 0);
   const sell = async () => {
     if (!cart.length) return; setMessage('');
+    const idempotencyKey = crypto.randomUUID();
+    const payload = { payment_method: method, lines: cart.map((item) => ({ product_id: item.product.id, quantity: item.qty })) };
     try {
-      const result = await api.request('/sales', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ payment_method: method, lines: cart.map((item) => ({ product_id: item.product.id, quantity: item.qty })) }) });
-      setCart([]); setMessage(`Venta ${result.id.slice(0, 8)} completada por ${money.format(Number(result.total))}`); await refresh();
+      const result = await submitSaleResilient({ payload, total, idempotencyKey });
+      setCart([]);
+      if (result.offline) {
+        setMessage(`Venta ${idempotencyKey.slice(0, 8)} guardada localmente por ${money.format(total)}. Pendiente de validación y sincronización.`);
+      } else {
+        setMessage(`Venta ${result.id.slice(0, 8)} completada por ${money.format(Number(result.total))}`);
+        await refresh();
+      }
     } catch (err) { setMessage(err.message); }
   };
-  return <div className="pos-layout"><section className="panel"><div className="panel-title"><div><p className="eyebrow">Venta rápida</p><h2>Productos</h2></div><span>{products.length} activos</span></div><div className="product-grid">{products.map((product) => <button className="product-card" key={product.id} onClick={() => add(product)}><span className="product-avatar">{product.name.slice(0, 2).toUpperCase()}</span><strong>{product.name}</strong><small>{product.sku} · {product.size || 'Única'} · {product.color || '—'}</small><b>{money.format(Number(product.sale_price))}</b></button>)}</div></section><aside className="panel cart"><p className="eyebrow">Caja</p><h2>Venta actual</h2><div className="cart-lines">{cart.length === 0 && <p className="muted">Escanee o seleccione un producto.</p>}{cart.map((item) => <div className="cart-line" key={item.product.id}><span>{item.qty} × {item.product.name}</span><strong>{money.format(item.qty * Number(item.product.sale_price))}</strong></div>)}</div><label>Método de pago<select value={method} onChange={(e) => setMethod(e.target.value)}><option value="cash">Efectivo</option><option value="transfer">Transferencia</option><option value="card">Tarjeta / terminal externa</option></select></label><div className="total"><span>Total</span><strong>{money.format(total)}</strong></div><button className="primary checkout" onClick={sell} disabled={!cart.length}>Cobrar</button>{message && <div className="notice">{message}</div>}</aside></div>;
+  return <><div className="pos-layout"><section className="panel"><div className="panel-title"><div><p className="eyebrow">Venta rápida</p><h2>Productos</h2></div><span>{products.length} activos</span></div><div className="product-grid">{products.map((product) => <button className="product-card" key={product.id} onClick={() => add(product)}><span className="product-avatar">{product.name.slice(0, 2).toUpperCase()}</span><strong>{product.name}</strong><small>{product.sku} · {product.size || 'Única'} · {product.color || '—'}</small><b>{money.format(Number(product.sale_price))}</b></button>)}</div></section><aside className="panel cart"><p className="eyebrow">Caja</p><h2>Venta actual</h2><div className="cart-lines">{cart.length === 0 && <p className="muted">Escanee o seleccione un producto.</p>}{cart.map((item) => <div className="cart-line" key={item.product.id}><span>{item.qty} × {item.product.name}</span><strong>{money.format(item.qty * Number(item.product.sale_price))}</strong></div>)}</div><label>Método de pago<select value={method} onChange={(e) => setMethod(e.target.value)}><option value="cash">Efectivo</option><option value="transfer">Transferencia</option><option value="card">Tarjeta / terminal externa</option></select></label><div className="total"><span>Total</span><strong>{money.format(total)}</strong></div><button className="primary checkout" onClick={sell} disabled={!cart.length}>Cobrar</button>{message && <div className="notice">{message}</div>}</aside></div><OfflineSalesStatus onSynced={refresh} /></>;
 }
 
 function Inventory({ rows, products, refresh }) {
