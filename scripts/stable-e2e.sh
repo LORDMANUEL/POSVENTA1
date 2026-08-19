@@ -51,6 +51,28 @@ BOOTSTRAP_AGAIN=$(curl -sS -o /tmp/mz-bootstrap-again.json -w '%{http_code}' -X 
 
 ME=$(request GET "$API/me" '' "$TOKEN")
 printf '%s' "$ME" | grep -q '"role":"owner"'
+FIRST_BRANCH_ID=$(printf '%s' "$ME" | json_get branch_id)
+
+# Multi-tenant product contract: the original owner becomes platform operator,
+# can provision a second isolated company, while the new owner cannot provision
+# a third tenant or write into the original tenant branch.
+PLATFORM_ACCESS=$(request GET "$API/platform/access" '' "$TOKEN")
+printf '%s' "$PLATFORM_ACCESS" | grep -q '"platform_admin":true'
+TENANT2=$(request POST "$API/platform/tenants" '{"store_name":"Mily Zebra SPS E2E","store_slug":"mily-zebra-sps-e2e","branch_name":"San Pedro Sula","branch_code":"SPS-01","owner_email":"owner.sps.e2e@milyzebra.test","owner_full_name":"Owner SPS E2E","owner_password":"SecondTenantE2E-2026!"}' "$TOKEN")
+TENANT2_ID=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["tenant"]["id"])' "$TENANT2")
+printf '%s' "$TENANT2" | grep -q '"admin_login_path":"/admin?tenant=mily-zebra-sps-e2e"'
+TENANT2_LOGIN=$(curl -fsS -X POST "$API/auth/login" --data-urlencode 'username=mily-zebra-sps-e2e:owner.sps.e2e@milyzebra.test' --data-urlencode 'password=SecondTenantE2E-2026!')
+TENANT2_TOKEN=$(printf '%s' "$TENANT2_LOGIN" | json_get access_token)
+TENANT2_ME=$(request GET "$API/me" '' "$TENANT2_TOKEN")
+python3 -c 'import json,sys; me=json.loads(sys.argv[1]); assert me["tenant_id"]==sys.argv[2],me' "$TENANT2_ME" "$TENANT2_ID"
+TENANT2_ACCESS=$(request GET "$API/platform/access" '' "$TENANT2_TOKEN")
+printf '%s' "$TENANT2_ACCESS" | grep -q '"platform_admin":false'
+TENANT2_PRODUCT=$(request POST "$API/products" '{"sku":"TENANT2-E2E-001","name":"Producto tenant dos","unit_cost":"10.00","sale_price":"25.00"}' "$TENANT2_TOKEN")
+TENANT2_PRODUCT_ID=$(printf '%s' "$TENANT2_PRODUCT" | json_get id)
+CROSS_BRANCH_CODE=$(curl -sS -o /tmp/mz-cross-tenant.json -w '%{http_code}' -X POST "$API/inventory/movements" \
+  -H "Authorization: Bearer $TENANT2_TOKEN" -H 'Content-Type: application/json' \
+  --data "{\"product_id\":\"$TENANT2_PRODUCT_ID\",\"branch_id\":\"$FIRST_BRANCH_ID\",\"quantity_delta\":\"1\",\"reason\":\"cross_tenant_probe\"}")
+[[ "$CROSS_BRANCH_CODE" == '404' ]]
 
 MODULES=$(request GET "$API/admin/modules" '' "$TOKEN")
 python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); m={r["key"]:r for r in rows}; internal=("purchasing","delivery","returns","crm","accounting","receivables","payables","banking","hr","workflows","analytics"); external=("payments","fiscal","music","visual"); assert all(m[k]["enabled"] for k in internal), {k:m[k]["enabled"] for k in internal}; assert all(not m[k]["enabled"] for k in external), {k:m[k]["enabled"] for k in external}' "$MODULES"
@@ -96,6 +118,8 @@ curl -fsS "$BASE_URL/" >/tmp/mz-storefront.html
 grep -q '<div id="root"></div>' /tmp/mz-storefront.html
 curl -fsS "$BASE_URL/admin" >/tmp/mz-admin.html
 grep -q '<div id="root"></div>' /tmp/mz-admin.html
+curl -fsS "$BASE_URL/admin?tenant=mily-zebra-sps-e2e" >/tmp/mz-admin-tenant.html
+grep -q '<div id="root"></div>' /tmp/mz-admin-tenant.html
 
 echo 'STABLE_E2E=PASS'
 echo "SALE_ID=$SALE1_ID"
