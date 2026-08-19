@@ -9,17 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import (
-    Branch,
-    CashSession,
-    PrintJob,
-    PrintJobStatus,
-    Product,
-    StockBalance,
-    Tenant,
-    User,
-    UserRole,
-)
+from .models import Branch, CashSession, PrintJob, Product, StockBalance, Tenant, User, UserRole
 from .security import create_access_token, get_current_user, hash_password, require_roles, verify_password
 from .services import AuditService, InventoryService, SalesService
 
@@ -95,7 +85,6 @@ class PrintJobIn(BaseModel):
 def bootstrap(payload: BootstrapIn, db: Session = Depends(get_db)) -> TokenOut:
     if db.scalar(select(func.count(User.id))) != 0:
         raise HTTPException(status_code=409, detail="El sistema ya fue inicializado")
-
     tenant = Tenant(name=payload.store_name, slug="mily-zebra")
     db.add(tenant)
     db.flush()
@@ -244,9 +233,7 @@ def open_cash(
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
-    active = db.scalar(
-        select(CashSession).where(CashSession.user_id == user.id, CashSession.closed_at.is_(None))
-    )
+    active = db.scalar(select(CashSession).where(CashSession.user_id == user.id, CashSession.closed_at.is_(None)))
     if active:
         raise HTTPException(status_code=409, detail="Ya existe una caja abierta para este usuario")
     session = CashSession(
@@ -306,50 +293,5 @@ def create_print_job(
     db.add(job)
     db.flush()
     AuditService.record(db, user, "print.queued", "print_job", job.id, {"type": job.job_type})
-    db.commit()
-    return {"id": job.id, "status": job.status.value}
-
-
-@router.post("/agent/print-jobs/claim")
-def claim_print_job(
-    device_id: str,
-    branch_id: str,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.SUPPORT)),
-) -> dict | None:
-    job = db.scalar(
-        select(PrintJob)
-        .where(
-            PrintJob.tenant_id == user.tenant_id,
-            PrintJob.branch_id == branch_id,
-            PrintJob.status == PrintJobStatus.QUEUED,
-            (PrintJob.device_id.is_(None) | (PrintJob.device_id == device_id)),
-        )
-        .order_by(PrintJob.created_at)
-        .limit(1)
-    )
-    if not job:
-        return None
-    job.status = PrintJobStatus.CLAIMED
-    job.device_id = device_id
-    job.claimed_at = datetime.now(timezone.utc)
-    db.commit()
-    return {"id": job.id, "job_type": job.job_type, "payload": job.payload}
-
-
-@router.post("/agent/print-jobs/{job_id}/complete")
-def complete_print_job(
-    job_id: str,
-    success: bool,
-    error: str | None = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.SUPPORT)),
-) -> dict:
-    job = db.scalar(select(PrintJob).where(PrintJob.id == job_id, PrintJob.tenant_id == user.tenant_id))
-    if not job:
-        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
-    job.status = PrintJobStatus.COMPLETED if success else PrintJobStatus.FAILED
-    job.error = error
-    job.completed_at = datetime.now(timezone.utc)
     db.commit()
     return {"id": job.id, "status": job.status.value}
