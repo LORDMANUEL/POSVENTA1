@@ -52,9 +52,10 @@ def test_partial_return_restores_stock_and_prevents_over_return(client, owner_he
     assert before_return.status_code == 200
     assert before_return.json()["expected_amount"] == "2397.00"
 
+    return_headers = {**owner_headers, "Idempotency-Key": "return-operation-0001"}
     returned = client.post(
         "/post-sales/returns",
-        headers=owner_headers,
+        headers=return_headers,
         json={
             "sale_id": sale_id,
             "reason": "Cambio de talla",
@@ -64,6 +65,19 @@ def test_partial_return_restores_stock_and_prevents_over_return(client, owner_he
     assert returned.status_code == 201
     assert returned.json()["total"] == "699.00"
     assert returned.json()["refund"]["status"] == "completed"
+
+    repeated = client.post(
+        "/post-sales/returns",
+        headers=return_headers,
+        json={
+            "sale_id": sale_id,
+            "reason": "Cambio de talla",
+            "lines": [{"sale_line_id": sale_line_id, "quantity": "1"}],
+        },
+    )
+    assert repeated.status_code == 201
+    assert repeated.json()["id"] == returned.json()["id"]
+    assert repeated.json()["refund"]["id"] == returned.json()["refund"]["id"]
 
     after_return = client.get(f"/cash/{cash_session_id}/summary", headers=owner_headers)
     assert after_return.status_code == 200
@@ -86,7 +100,7 @@ def test_partial_return_restores_stock_and_prevents_over_return(client, owner_he
 
     too_many = client.post(
         "/post-sales/returns",
-        headers=owner_headers,
+        headers={**owner_headers, "Idempotency-Key": "return-operation-too-many"},
         json={
             "sale_id": sale_id,
             "reason": "Intento inválido",
@@ -125,7 +139,7 @@ def test_cash_return_requires_open_cash_session(client, owner_headers) -> None:
 
     refused = client.post(
         "/post-sales/returns",
-        headers=owner_headers,
+        headers={**owner_headers, "Idempotency-Key": "return-closed-refused"},
         json={"sale_id": sale_id, "reason": "Caja cerrada", "lines": [{"sale_line_id": line_id, "quantity": "1"}]},
     )
     assert refused.status_code == 409
