@@ -27,6 +27,7 @@ class ReturnRecord(Base):
     sale_id: Mapped[str] = mapped_column(ForeignKey("sales.id", ondelete="RESTRICT"), index=True)
     created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reason: Mapped[str] = mapped_column(String(240), nullable=False)
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
