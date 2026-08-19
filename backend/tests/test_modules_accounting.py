@@ -59,3 +59,16 @@ def test_module_registry_and_accounting_flow(client, owner_headers) -> None:
     rows = {row["code"]: row for row in trial.json()}
     assert rows["1101"]["balance"] == "100.00"
     assert rows["4101"]["balance"] == "-100.00"
+
+    result = client.get("/accounting/income-statement", headers=owner_headers)
+    assert result.status_code == 200
+    assert result.json()["total_income"] == "100.00"
+    assert result.json()["total_expenses"] == "0.00"
+    assert result.json()["net_income"] == "100.00"
+
+    balance = client.get("/accounting/balance-sheet", headers=owner_headers)
+    assert balance.status_code == 200
+    assert balance.json()["total_assets"] == "100.00"
+    assert balance.json()["current_result"] == "100.00"
+    assert balance.json()["liabilities_plus_equity"] == "100.00"
+    assert balance.json()["difference"] == "0.00"
