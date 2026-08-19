@@ -1,22 +1,44 @@
+import secrets
 from datetime import date
 from decimal import Decimal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .finance_models import BankAccount, BankTransaction, Payable, PayablePayment, Receivable, ReceivablePayment
+from .finance_models import (
+    BankAccount,
+    BankTransaction,
+    Payable,
+    PayablePayment,
+    Receivable,
+    ReceivablePayment,
+)
+from .integrity import canonical_request_hash, require_idempotency_match
 from .models import User, UserRole
 from .module_api import require_enabled_module
 from .ops_models import Customer, Supplier
 from .security import require_roles
 from .services import AuditService
 
-receivables_router = APIRouter(prefix="/finance/receivables", tags=["receivables"], dependencies=[Depends(require_enabled_module("receivables"))])
-payables_router = APIRouter(prefix="/finance/payables", tags=["payables"], dependencies=[Depends(require_enabled_module("payables"))])
-banking_router = APIRouter(prefix="/finance/banking", tags=["banking"], dependencies=[Depends(require_enabled_module("banking"))])
+receivables_router = APIRouter(
+    prefix="/finance/receivables",
+    tags=["receivables"],
+    dependencies=[Depends(require_enabled_module("receivables"))],
+)
+payables_router = APIRouter(
+    prefix="/finance/payables",
+    tags=["payables"],
+    dependencies=[Depends(require_enabled_module("payables"))],
+)
+banking_router = APIRouter(
+    prefix="/finance/banking",
+    tags=["banking"],
+    dependencies=[Depends(require_enabled_module("banking"))],
+)
 
 
 class OpenItemIn(BaseModel):
@@ -55,103 +77,413 @@ def apply_payment(balance: Decimal, amount: Decimal) -> tuple[Decimal, str]:
     return new_balance, "paid" if new_balance == 0 else "partial"
 
 
+def _payment_hash(item_id: str, payload: PaymentIn) -> str:
+    return canonical_request_hash(
+        {
+            "item_id": item_id,
+            "amount": payload.amount,
+            "method": payload.method,
+            "reference": payload.reference,
+        }
+    )
+
+
+def _receivable_payment_response(payment: ReceivablePayment, item: Receivable) -> dict:
+    return {
+        "id": payment.id,
+        "receivable_id": item.id,
+        "balance": str(item.balance),
+        "status": item.status,
+    }
+
+
+def _payable_payment_response(payment: PayablePayment, item: Payable) -> dict:
+    return {
+        "id": payment.id,
+        "payable_id": item.id,
+        "balance": str(item.balance),
+        "status": item.status,
+    }
+
+
 @receivables_router.get("")
-def list_receivables(db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR))) -> list[dict]:
-    rows = db.scalars(select(Receivable).where(Receivable.tenant_id == user.tenant_id).order_by(Receivable.created_at.desc())).all()
-    return [{"id": r.id, "customer_id": r.customer_id, "reference": r.reference, "original_amount": str(r.original_amount), "balance": str(r.balance), "due_date": r.due_date, "status": r.status} for r in rows]
+def list_receivables(
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)
+    ),
+) -> list[dict]:
+    rows = db.scalars(
+        select(Receivable)
+        .where(Receivable.tenant_id == user.tenant_id)
+        .order_by(Receivable.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "customer_id": r.customer_id,
+            "reference": r.reference,
+            "original_amount": str(r.original_amount),
+            "balance": str(r.balance),
+            "due_date": r.due_date,
+            "status": r.status,
+        }
+        for r in rows
+    ]
 
 
 @receivables_router.post("", status_code=201)
-def create_receivable(payload: OpenItemIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
-    if not db.scalar(select(Customer.id).where(Customer.id == payload.party_id, Customer.tenant_id == user.tenant_id)):
+def create_receivable(
+    payload: OpenItemIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
+) -> dict:
+    if not db.scalar(
+        select(Customer.id).where(
+            Customer.id == payload.party_id,
+            Customer.tenant_id == user.tenant_id,
+        )
+    ):
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
-    if db.scalar(select(Receivable.id).where(Receivable.tenant_id == user.tenant_id, Receivable.reference == payload.reference)):
+    if db.scalar(
+        select(Receivable.id).where(
+            Receivable.tenant_id == user.tenant_id,
+            Receivable.reference == payload.reference,
+        )
+    ):
         raise HTTPException(status_code=409, detail="Referencia por cobrar ya registrada")
-    row = Receivable(tenant_id=user.tenant_id, customer_id=payload.party_id, reference=payload.reference, description=payload.description, original_amount=payload.amount, balance=payload.amount, due_date=payload.due_date)
+    row = Receivable(
+        tenant_id=user.tenant_id,
+        customer_id=payload.party_id,
+        reference=payload.reference,
+        description=payload.description,
+        original_amount=payload.amount,
+        balance=payload.amount,
+        due_date=payload.due_date,
+    )
     db.add(row)
     db.flush()
-    AuditService.record(db, user, "receivable.created", "receivable", row.id, {"reference": row.reference, "amount": str(row.original_amount)})
+    AuditService.record(
+        db,
+        user,
+        "receivable.created",
+        "receivable",
+        row.id,
+        {"reference": row.reference, "amount": str(row.original_amount)},
+    )
     db.commit()
-    return {"id": row.id, "reference": row.reference, "balance": str(row.balance), "status": row.status}
+    return {
+        "id": row.id,
+        "reference": row.reference,
+        "balance": str(row.balance),
+        "status": row.status,
+    }
 
 
 @receivables_router.post("/{receivable_id}/payments", status_code=201)
-def receive_payment(receivable_id: str, payload: PaymentIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER))) -> dict:
-    item = db.scalar(select(Receivable).where(Receivable.id == receivable_id, Receivable.tenant_id == user.tenant_id))
+def receive_payment(
+    receivable_id: str,
+    payload: PaymentIn,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=8, max_length=100),
+    ] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)
+    ),
+) -> dict:
+    item = db.scalar(
+        select(Receivable)
+        .where(
+            Receivable.id == receivable_id,
+            Receivable.tenant_id == user.tenant_id,
+        )
+        .with_for_update()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Cuenta por cobrar no encontrada")
+
+    idempotency_key = idempotency_key or secrets.token_urlsafe(18)
+    request_hash = _payment_hash(receivable_id, payload)
+    existing = db.scalar(
+        select(ReceivablePayment).where(
+            ReceivablePayment.tenant_id == user.tenant_id,
+            ReceivablePayment.idempotency_key == idempotency_key,
+        )
+    )
+    if existing:
+        require_idempotency_match(existing.request_hash, request_hash)
+        if existing.receivable_id != item.id:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency-Key pertenece a otra cuenta por cobrar",
+            )
+        return _receivable_payment_response(existing, item)
+
     new_balance, status = apply_payment(Decimal(item.balance), payload.amount)
-    payment = ReceivablePayment(tenant_id=user.tenant_id, receivable_id=item.id, amount=payload.amount, method=payload.method, reference=payload.reference, received_by_user_id=user.id)
+    payment = ReceivablePayment(
+        tenant_id=user.tenant_id,
+        receivable_id=item.id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        amount=payload.amount,
+        method=payload.method,
+        reference=payload.reference,
+        received_by_user_id=user.id,
+    )
     db.add(payment)
     item.balance = new_balance
     item.status = status
-    AuditService.record(db, user, "receivable.paid", "receivable", item.id, {"amount": str(payload.amount), "balance": str(new_balance)})
+    AuditService.record(
+        db,
+        user,
+        "receivable.paid",
+        "receivable",
+        item.id,
+        {
+            "amount": str(payload.amount),
+            "balance": str(new_balance),
+            "idempotency_key": idempotency_key,
+        },
+    )
     db.commit()
-    return {"id": payment.id, "receivable_id": item.id, "balance": str(item.balance), "status": item.status}
+    return _receivable_payment_response(payment, item)
 
 
 @payables_router.get("")
-def list_payables(db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR))) -> list[dict]:
-    rows = db.scalars(select(Payable).where(Payable.tenant_id == user.tenant_id).order_by(Payable.created_at.desc())).all()
-    return [{"id": r.id, "supplier_id": r.supplier_id, "reference": r.reference, "original_amount": str(r.original_amount), "balance": str(r.balance), "due_date": r.due_date, "status": r.status} for r in rows]
+def list_payables(
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)
+    ),
+) -> list[dict]:
+    rows = db.scalars(
+        select(Payable)
+        .where(Payable.tenant_id == user.tenant_id)
+        .order_by(Payable.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "supplier_id": r.supplier_id,
+            "reference": r.reference,
+            "original_amount": str(r.original_amount),
+            "balance": str(r.balance),
+            "due_date": r.due_date,
+            "status": r.status,
+        }
+        for r in rows
+    ]
 
 
 @payables_router.post("", status_code=201)
-def create_payable(payload: OpenItemIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
-    if not db.scalar(select(Supplier.id).where(Supplier.id == payload.party_id, Supplier.tenant_id == user.tenant_id)):
+def create_payable(
+    payload: OpenItemIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
+) -> dict:
+    if not db.scalar(
+        select(Supplier.id).where(
+            Supplier.id == payload.party_id,
+            Supplier.tenant_id == user.tenant_id,
+        )
+    ):
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
-    if db.scalar(select(Payable.id).where(Payable.tenant_id == user.tenant_id, Payable.reference == payload.reference)):
+    if db.scalar(
+        select(Payable.id).where(
+            Payable.tenant_id == user.tenant_id,
+            Payable.reference == payload.reference,
+        )
+    ):
         raise HTTPException(status_code=409, detail="Referencia por pagar ya registrada")
-    row = Payable(tenant_id=user.tenant_id, supplier_id=payload.party_id, reference=payload.reference, description=payload.description, original_amount=payload.amount, balance=payload.amount, due_date=payload.due_date)
+    row = Payable(
+        tenant_id=user.tenant_id,
+        supplier_id=payload.party_id,
+        reference=payload.reference,
+        description=payload.description,
+        original_amount=payload.amount,
+        balance=payload.amount,
+        due_date=payload.due_date,
+    )
     db.add(row)
     db.flush()
-    AuditService.record(db, user, "payable.created", "payable", row.id, {"reference": row.reference, "amount": str(row.original_amount)})
+    AuditService.record(
+        db,
+        user,
+        "payable.created",
+        "payable",
+        row.id,
+        {"reference": row.reference, "amount": str(row.original_amount)},
+    )
     db.commit()
-    return {"id": row.id, "reference": row.reference, "balance": str(row.balance), "status": row.status}
+    return {
+        "id": row.id,
+        "reference": row.reference,
+        "balance": str(row.balance),
+        "status": row.status,
+    }
 
 
 @payables_router.post("/{payable_id}/payments", status_code=201)
-def pay_payable(payable_id: str, payload: PaymentIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
-    item = db.scalar(select(Payable).where(Payable.id == payable_id, Payable.tenant_id == user.tenant_id))
+def pay_payable(
+    payable_id: str,
+    payload: PaymentIn,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=8, max_length=100),
+    ] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
+) -> dict:
+    item = db.scalar(
+        select(Payable)
+        .where(Payable.id == payable_id, Payable.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Cuenta por pagar no encontrada")
+
+    idempotency_key = idempotency_key or secrets.token_urlsafe(18)
+    request_hash = _payment_hash(payable_id, payload)
+    existing = db.scalar(
+        select(PayablePayment).where(
+            PayablePayment.tenant_id == user.tenant_id,
+            PayablePayment.idempotency_key == idempotency_key,
+        )
+    )
+    if existing:
+        require_idempotency_match(existing.request_hash, request_hash)
+        if existing.payable_id != item.id:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency-Key pertenece a otra cuenta por pagar",
+            )
+        return _payable_payment_response(existing, item)
+
     new_balance, status = apply_payment(Decimal(item.balance), payload.amount)
-    payment = PayablePayment(tenant_id=user.tenant_id, payable_id=item.id, amount=payload.amount, method=payload.method, reference=payload.reference, paid_by_user_id=user.id)
+    payment = PayablePayment(
+        tenant_id=user.tenant_id,
+        payable_id=item.id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        amount=payload.amount,
+        method=payload.method,
+        reference=payload.reference,
+        paid_by_user_id=user.id,
+    )
     db.add(payment)
     item.balance = new_balance
     item.status = status
-    AuditService.record(db, user, "payable.paid", "payable", item.id, {"amount": str(payload.amount), "balance": str(new_balance)})
+    AuditService.record(
+        db,
+        user,
+        "payable.paid",
+        "payable",
+        item.id,
+        {
+            "amount": str(payload.amount),
+            "balance": str(new_balance),
+            "idempotency_key": idempotency_key,
+        },
+    )
     db.commit()
-    return {"id": payment.id, "payable_id": item.id, "balance": str(item.balance), "status": item.status}
+    return _payable_payment_response(payment, item)
 
 
 @banking_router.get("/accounts")
-def list_bank_accounts(db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR))) -> list[dict]:
-    rows = db.scalars(select(BankAccount).where(BankAccount.tenant_id == user.tenant_id).order_by(BankAccount.name)).all()
-    return [{"id": row.id, "name": row.name, "bank_name": row.bank_name, "currency": row.currency, "account_last4": row.account_last4, "ledger_account_id": row.ledger_account_id} for row in rows]
+def list_bank_accounts(
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)
+    ),
+) -> list[dict]:
+    rows = db.scalars(
+        select(BankAccount)
+        .where(BankAccount.tenant_id == user.tenant_id)
+        .order_by(BankAccount.name)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "name": row.name,
+            "bank_name": row.bank_name,
+            "currency": row.currency,
+            "account_last4": row.account_last4,
+            "ledger_account_id": row.ledger_account_id,
+        }
+        for row in rows
+    ]
 
 
 @banking_router.post("/accounts", status_code=201)
-def create_bank_account(payload: BankAccountIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN))) -> dict:
+def create_bank_account(
+    payload: BankAccountIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN)),
+) -> dict:
     row = BankAccount(tenant_id=user.tenant_id, **payload.model_dump())
     db.add(row)
     db.flush()
-    AuditService.record(db, user, "bank_account.created", "bank_account", row.id, {"name": row.name})
+    AuditService.record(
+        db,
+        user,
+        "bank_account.created",
+        "bank_account",
+        row.id,
+        {"name": row.name},
+    )
     db.commit()
-    return {"id": row.id, "name": row.name, "bank_name": row.bank_name, "currency": row.currency}
+    return {
+        "id": row.id,
+        "name": row.name,
+        "bank_name": row.bank_name,
+        "currency": row.currency,
+    }
 
 
 @banking_router.post("/accounts/{bank_account_id}/transactions", status_code=201)
-def add_bank_transaction(bank_account_id: str, payload: BankTransactionIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
-    account = db.scalar(select(BankAccount).where(BankAccount.id == bank_account_id, BankAccount.tenant_id == user.tenant_id))
+def add_bank_transaction(
+    bank_account_id: str,
+    payload: BankTransactionIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
+) -> dict:
+    account = db.scalar(
+        select(BankAccount).where(
+            BankAccount.id == bank_account_id,
+            BankAccount.tenant_id == user.tenant_id,
+        )
+    )
     if not account:
         raise HTTPException(status_code=404, detail="Cuenta bancaria no encontrada")
-    duplicate = db.scalar(select(BankTransaction.id).where(BankTransaction.tenant_id == user.tenant_id, BankTransaction.bank_account_id == account.id, BankTransaction.external_reference == payload.external_reference))
+    duplicate = db.scalar(
+        select(BankTransaction.id).where(
+            BankTransaction.tenant_id == user.tenant_id,
+            BankTransaction.bank_account_id == account.id,
+            BankTransaction.external_reference == payload.external_reference,
+        )
+    )
     if duplicate:
         raise HTTPException(status_code=409, detail="Movimiento bancario duplicado")
-    tx = BankTransaction(tenant_id=user.tenant_id, bank_account_id=account.id, **payload.model_dump())
+    tx = BankTransaction(
+        tenant_id=user.tenant_id,
+        bank_account_id=account.id,
+        **payload.model_dump(),
+    )
     db.add(tx)
     db.flush()
-    AuditService.record(db, user, "bank_transaction.imported", "bank_transaction", tx.id, {"reference": tx.external_reference, "amount": str(tx.amount)})
+    AuditService.record(
+        db,
+        user,
+        "bank_transaction.imported",
+        "bank_transaction",
+        tx.id,
+        {"reference": tx.external_reference, "amount": str(tx.amount)},
+    )
     db.commit()
-    return {"id": tx.id, "amount": str(tx.amount), "reconciliation_status": tx.reconciliation_status}
+    return {
+        "id": tx.id,
+        "amount": str(tx.amount),
+        "reconciliation_status": tx.reconciliation_status,
+    }
