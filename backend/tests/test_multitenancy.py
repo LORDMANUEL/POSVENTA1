@@ -1,9 +1,12 @@
 def test_platform_admin_can_create_second_tenant_and_login_by_slug(client, owner_headers) -> None:
     me = client.get('/me', headers=owner_headers)
     assert me.status_code == 200
-    assert me.json()['platform_admin'] is True
-
     first_branch_id = me.json()['branch_id']
+
+    access = client.get('/platform/access', headers=owner_headers)
+    assert access.status_code == 200
+    assert access.json()['platform_admin'] is True
+
     created = client.post(
         '/platform/tenants',
         headers=owner_headers,
@@ -23,6 +26,7 @@ def test_platform_admin_can_create_second_tenant_and_login_by_slug(client, owner
     second = created.json()
     assert second['tenant']['slug'] == 'mily-zebra-sps'
     assert second['owner']['platform_admin'] is False
+    assert second['admin_login_path'] == '/admin?tenant=mily-zebra-sps'
 
     ambiguous = client.post(
         '/auth/login',
@@ -42,7 +46,10 @@ def test_platform_admin_can_create_second_tenant_and_login_by_slug(client, owner
     second_me = client.get('/me', headers=second_headers)
     assert second_me.status_code == 200
     assert second_me.json()['tenant_id'] == second['tenant']['id']
-    assert second_me.json()['platform_admin'] is False
+
+    second_access = client.get('/platform/access', headers=second_headers)
+    assert second_access.status_code == 200
+    assert second_access.json()['platform_admin'] is False
 
     forbidden_platform = client.post(
         '/platform/tenants',
