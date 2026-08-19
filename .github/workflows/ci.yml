@@ -5,13 +5,12 @@ on:
     branches:
       - main
       - 'dev/**'
-      - 'stabilize/**'
   pull_request:
     branches:
       - main
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
