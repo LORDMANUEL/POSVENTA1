@@ -30,6 +30,7 @@ from .media_api import media_router
 from .module_api import module_router, require_enabled_module
 from .ops_api import ops_router
 from .people_api import attendance_router, hr_router, payroll_router
+from .platform_api import platform_router
 from .post_sale_api import post_sale_router
 
 APP_VERSION = "0.12.1"
@@ -91,6 +92,7 @@ def health() -> dict[str, str]:
 
 
 app.include_router(router)
+app.include_router(platform_router)
 app.include_router(ops_router)
 app.include_router(inventory_advanced_router)
 app.include_router(media_router)
