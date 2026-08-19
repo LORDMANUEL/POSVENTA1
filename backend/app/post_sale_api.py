@@ -5,10 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .cash_models import CashMovement
 from .db import get_db
+from .integrity import canonical_request_hash, require_idempotency_match
 from .models import CashSession, PrintJob, Product, Sale, SaleLine, User, UserRole
 from .module_api import require_enabled_module
 from .post_sale_models import Refund, RefundStatus, ReturnLine, ReturnRecord
@@ -20,8 +22,19 @@ post_sale_router = APIRouter(
     tags=["post-sales"],
     dependencies=[Depends(require_enabled_module("returns"))],
 )
-POST_SALE_READ_ROLES = (UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.AUDITOR)
-POST_SALE_WRITE_ROLES = (UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)
+POST_SALE_READ_ROLES = (
+    UserRole.OWNER,
+    UserRole.ADMIN,
+    UserRole.MANAGER,
+    UserRole.CASHIER,
+    UserRole.AUDITOR,
+)
+POST_SALE_WRITE_ROLES = (
+    UserRole.OWNER,
+    UserRole.ADMIN,
+    UserRole.MANAGER,
+    UserRole.CASHIER,
+)
 
 
 class ReturnLineIn(BaseModel):
@@ -40,8 +53,23 @@ def quantity_text(value: Decimal) -> str:
 
 
 def already_returned_quantity(db: Session, sale_line_id: str) -> Decimal:
-    value = db.scalar(select(func.coalesce(func.sum(ReturnLine.quantity), 0)).where(ReturnLine.sale_line_id == sale_line_id))
+    value = db.scalar(
+        select(func.coalesce(func.sum(ReturnLine.quantity), 0)).where(
+            ReturnLine.sale_line_id == sale_line_id
+        )
+    )
     return Decimal(value or 0)
+
+
+def _return_hash(payload: ReturnIn) -> str:
+    lines = [
+        {"sale_line_id": line.sale_line_id, "quantity": line.quantity}
+        for line in payload.lines
+    ]
+    lines.sort(key=lambda item: item["sale_line_id"])
+    return canonical_request_hash(
+        {"sale_id": payload.sale_id, "reason": payload.reason, "lines": lines}
+    )
 
 
 def sale_detail(db: Session, sale: Sale) -> dict:
@@ -84,7 +112,11 @@ def sale_detail(db: Session, sale: Sale) -> dict:
 
 
 def return_response(db: Session, record: ReturnRecord) -> dict:
-    refund = db.scalar(select(Refund).where(Refund.return_id == record.id).order_by(Refund.created_at.desc()))
+    refund = db.scalar(
+        select(Refund)
+        .where(Refund.return_id == record.id)
+        .order_by(Refund.created_at.desc())
+    )
     if refund is None:
         raise HTTPException(status_code=500, detail="Devolución sin reembolso asociado")
     return {
@@ -131,7 +163,9 @@ def get_sale_for_post_sale(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*POST_SALE_READ_ROLES)),
 ) -> dict:
-    sale = db.scalar(select(Sale).where(Sale.id == sale_id, Sale.tenant_id == user.tenant_id))
+    sale = db.scalar(
+        select(Sale).where(Sale.id == sale_id, Sale.tenant_id == user.tenant_id)
+    )
     if not sale:
         raise HTTPException(status_code=404, detail="Venta no encontrada")
     return sale_detail(db, sale)
@@ -142,7 +176,11 @@ def list_returns(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*POST_SALE_READ_ROLES)),
 ) -> list[dict]:
-    records = db.scalars(select(ReturnRecord).where(ReturnRecord.tenant_id == user.tenant_id).order_by(ReturnRecord.created_at.desc())).all()
+    records = db.scalars(
+        select(ReturnRecord)
+        .where(ReturnRecord.tenant_id == user.tenant_id)
+        .order_by(ReturnRecord.created_at.desc())
+    ).all()
     return [
         {
             "id": item.id,
@@ -158,10 +196,14 @@ def list_returns(
 @post_sale_router.post("/returns", status_code=201)
 def create_return(
     payload: ReturnIn,
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=100)],
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=8, max_length=100),
+    ],
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(*POST_SALE_WRITE_ROLES)),
 ) -> dict:
+    request_hash = _return_hash(payload)
     existing = db.scalar(
         select(ReturnRecord).where(
             ReturnRecord.tenant_id == user.tenant_id,
@@ -169,33 +211,60 @@ def create_return(
         )
     )
     if existing:
+        require_idempotency_match(existing.request_hash, request_hash)
         return return_response(db, existing)
 
-    sale = db.scalar(select(Sale).where(Sale.id == payload.sale_id, Sale.tenant_id == user.tenant_id))
+    sale = db.scalar(
+        select(Sale)
+        .where(Sale.id == payload.sale_id, Sale.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
     if not sale:
         raise HTTPException(status_code=404, detail="Venta no encontrada")
+
+    existing = db.scalar(
+        select(ReturnRecord).where(
+            ReturnRecord.tenant_id == user.tenant_id,
+            ReturnRecord.idempotency_key == idempotency_key,
+        )
+    )
+    if existing:
+        require_idempotency_match(existing.request_hash, request_hash)
+        return return_response(db, existing)
 
     cash_session = None
     if sale.payment_method == "cash":
         cash_session = db.scalar(
-            select(CashSession).where(
+            select(CashSession)
+            .where(
                 CashSession.tenant_id == user.tenant_id,
                 CashSession.branch_id == sale.branch_id,
                 CashSession.user_id == user.id,
                 CashSession.closed_at.is_(None),
             )
+            .with_for_update()
         )
         if cash_session is None:
-            raise HTTPException(status_code=409, detail="Debe abrir caja antes de reembolsar una venta en efectivo")
+            raise HTTPException(
+                status_code=409,
+                detail="Debe abrir caja antes de reembolsar una venta en efectivo",
+            )
 
     requested_ids = [line.sale_line_id for line in payload.lines]
     if len(requested_ids) != len(set(requested_ids)):
-        raise HTTPException(status_code=422, detail="No repita una misma línea de venta en la devolución")
+        raise HTTPException(
+            status_code=422,
+            detail="No repita una misma línea de venta en la devolución",
+        )
 
     prepared: list[tuple[SaleLine, Decimal, Decimal]] = []
     total = Decimal("0")
-    for item in payload.lines:
-        sale_line = db.scalar(select(SaleLine).where(SaleLine.id == item.sale_line_id, SaleLine.sale_id == sale.id))
+    for item in sorted(payload.lines, key=lambda line: line.sale_line_id):
+        sale_line = db.scalar(
+            select(SaleLine)
+            .where(SaleLine.id == item.sale_line_id, SaleLine.sale_id == sale.id)
+            .with_for_update()
+        )
         if not sale_line:
             raise HTTPException(status_code=404, detail="Línea de venta no encontrada")
         quantity = Decimal(item.quantity)
@@ -204,7 +273,10 @@ def create_return(
         if quantity > available_to_return:
             raise HTTPException(
                 status_code=409,
-                detail=f"Cantidad a devolver excede lo disponible. Máximo: {available_to_return}",
+                detail=(
+                    "Cantidad a devolver excede lo disponible. "
+                    f"Máximo: {available_to_return}"
+                ),
             )
         line_total = money(Decimal(sale_line.unit_price) * quantity)
         total += line_total
@@ -216,11 +288,25 @@ def create_return(
         sale_id=sale.id,
         created_by_user_id=user.id,
         idempotency_key=idempotency_key,
+        request_hash=request_hash,
         reason=payload.reason,
         total=money(total),
     )
-    db.add(record)
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.add(record)
+            db.flush()
+    except IntegrityError:
+        existing = db.scalar(
+            select(ReturnRecord).where(
+                ReturnRecord.tenant_id == user.tenant_id,
+                ReturnRecord.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is None:
+            raise
+        require_idempotency_match(existing.request_hash, request_hash)
+        return return_response(db, existing)
 
     for sale_line, quantity, line_total in prepared:
         db.add(
@@ -244,7 +330,11 @@ def create_return(
             record.id,
         )
 
-    refund_status = RefundStatus.COMPLETED if sale.payment_method == "cash" else RefundStatus.PENDING_EXTERNAL
+    refund_status = (
+        RefundStatus.COMPLETED
+        if sale.payment_method == "cash"
+        else RefundStatus.PENDING_EXTERNAL
+    )
     refund = Refund(
         tenant_id=user.tenant_id,
         return_id=record.id,
@@ -308,6 +398,7 @@ def create_return(
             "total": str(record.total),
             "refund_status": refund_status.value,
             "idempotency_key": idempotency_key,
+            "request_hash": request_hash,
         },
     )
     db.commit()
