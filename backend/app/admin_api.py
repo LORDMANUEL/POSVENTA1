@@ -39,8 +39,15 @@ def get_current_device(
     x_device_token: Annotated[str, Header(alias="X-Device-Token")],
     db: Session = Depends(get_db),
 ) -> Device:
-    device = db.scalar(select(Device).where(Device.device_id == x_device_id, Device.active.is_(True)))
-    if not device or not secrets.compare_digest(device.token_hash, token_hash(x_device_token)):
+    supplied_hash = token_hash(x_device_token)
+    device = db.scalar(
+        select(Device).where(
+            Device.device_id == x_device_id,
+            Device.token_hash == supplied_hash,
+            Device.active.is_(True),
+        )
+    )
+    if not device or not secrets.compare_digest(device.token_hash, supplied_hash):
         raise HTTPException(status_code=401, detail="Dispositivo no autorizado")
     device.last_seen_at = datetime.now(timezone.utc)
     db.commit()
