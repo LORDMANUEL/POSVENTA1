@@ -2,11 +2,27 @@ import { setConnectivity } from './connectivity';
 import { clearSnapshots, isSnapshotPath, loadSnapshot, saveSnapshot } from './offlineSnapshot';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
+const TOKEN_KEY = 'mz_token';
+const TENANT_ID_KEY = 'mz_tenant_id';
+const TENANT_SLUG_KEY = 'mz_tenant_slug';
 
 export function tenantSlugFromLocation(locationLike = globalThis.location) {
   try {
     const params = new URLSearchParams(locationLike?.search || '');
     return String(params.get('tenant') || '').trim().toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function tokenTenantId(token) {
+  try {
+    const segment = String(token || '').split('.')[1];
+    if (!segment || typeof globalThis.atob !== 'function') return '';
+    const normalized = segment.replaceAll('-', '+').replaceAll('_', '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const payload = JSON.parse(globalThis.atob(padded));
+    return String(payload?.tenant_id || '');
   } catch {
     return '';
   }
@@ -24,14 +40,31 @@ export class ApiError extends Error {
 
 export class ApiClient {
   constructor() {
-    this.token = localStorage.getItem('mz_token') || '';
+    this.token = localStorage.getItem(TOKEN_KEY) || '';
+    const requestedTenant = tenantSlugFromLocation();
+    const storedTenantSlug = localStorage.getItem(TENANT_SLUG_KEY) || '';
+
+    // A tenant-qualified URL is an explicit context switch. Never keep a token
+    // from another tenant in the persistent WebView2 profile.
+    if (requestedTenant && this.token && storedTenantSlug !== requestedTenant) {
+      this.setToken('');
+    } else if (this.token && !localStorage.getItem(TENANT_ID_KEY)) {
+      const tenantId = tokenTenantId(this.token);
+      if (tenantId) localStorage.setItem(TENANT_ID_KEY, tenantId);
+    }
   }
 
-  setToken(token) {
+  setToken(token, tenantSlug = null) {
     this.token = token;
-    if (token) localStorage.setItem('mz_token', token);
-    else {
-      localStorage.removeItem('mz_token');
+    if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
+      const tenantId = tokenTenantId(token);
+      if (tenantId) localStorage.setItem(TENANT_ID_KEY, tenantId);
+      if (tenantSlug !== null) localStorage.setItem(TENANT_SLUG_KEY, String(tenantSlug || '').trim().toLowerCase());
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(TENANT_ID_KEY);
+      localStorage.removeItem(TENANT_SLUG_KEY);
       clearSnapshots();
     }
   }
@@ -65,18 +98,20 @@ export class ApiClient {
     return body;
   }
 
-  bootstrap(data, installationCode = '') {
+  async bootstrap(data, installationCode = '') {
     const supplied = String(
       installationCode
       || window.prompt('Ingrese el código de primera instalación guardado por el instalador en .bootstrap-token:')
       || '',
     ).trim();
     if (!supplied) throw new ApiError('Se requiere el código de primera instalación', 403);
-    return this.request('/bootstrap', {
+    const body = await this.request('/bootstrap', {
       method: 'POST',
       headers: { 'X-Bootstrap-Token': supplied },
       body: JSON.stringify(data),
     });
+    this.setToken(body.access_token, data.store_slug || tenantSlugFromLocation() || '');
+    return body;
   }
 
   async login(email, password, tenantSlug = '') {
@@ -101,7 +136,7 @@ export class ApiClient {
       if (selected) return this.login(email, password, selected);
     }
     if (!response.ok) throw new ApiError(body.detail || 'No se pudo iniciar sesión', response.status, body);
-    this.setToken(body.access_token);
+    this.setToken(body.access_token, selectedTenant);
     return body;
   }
 }
