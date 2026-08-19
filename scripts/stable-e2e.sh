@@ -33,6 +33,9 @@ TOKEN=$(printf '%s' "$BOOTSTRAP" | json_get access_token)
 ME=$(request GET "$API/me" '' "$TOKEN")
 printf '%s' "$ME" | grep -q '"role":"owner"'
 
+MODULES=$(request GET "$API/admin/modules" '' "$TOKEN")
+python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); m={r["key"]:r for r in rows}; internal=("purchasing","delivery","returns","crm","accounting","receivables","payables","banking","hr","workflows","analytics"); external=("payments","fiscal","music","visual"); assert all(m[k]["enabled"] for k in internal), {k:m[k]["enabled"] for k in internal}; assert all(not m[k]["enabled"] for k in external), {k:m[k]["enabled"] for k in external}' "$MODULES"
+
 PRODUCT=$(request POST "$API/products" '{"sku":"E2E-001","barcode":"750000000001","name":"Blusa E2E","description":"Producto de prueba estable","category":"Mily Basics","size":"M","color":"Rosa","unit_cost":"100.00","sale_price":"249.00"}' "$TOKEN")
 PRODUCT_ID=$(printf '%s' "$PRODUCT" | json_get id)
 [[ -n "$PRODUCT_ID" ]]
