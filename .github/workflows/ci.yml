@@ -59,7 +59,7 @@ jobs:
         run: alembic upgrade head
       - name: Verify migration state
         working-directory: backend
-        run: alembic current | grep 20260818_0001
+        run: alembic current | grep 20260818_0002
 
   frontend:
     runs-on: ubuntu-latest
