@@ -1,9 +1,10 @@
 [project]
 name = "mily-zebra-api"
-version = "0.1.0"
+version = "0.4.0"
 description = "Mily Zebra Commerce OS domain API"
 requires-python = ">=3.12"
 dependencies = [
+  "alembic==1.18.5",
   "fastapi==0.116.1",
   "uvicorn[standard]==0.35.0",
   "sqlalchemy==2.0.43",
