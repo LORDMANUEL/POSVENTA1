@@ -23,13 +23,15 @@ jobs:
           sed -i 's/^MZ_SITE_ADDRESS=.*/MZ_SITE_ADDRESS=:80/' .env
       - name: Build and start stable stack
         run: docker compose up -d --build
-      - name: Execute end-to-end stable contract
+      - name: Execute core end-to-end stable contract
         run: bash scripts/stable-e2e.sh
+      - name: Execute extended ERP stable contract
+        run: bash scripts/stable-e2e-extended.sh
       - name: Diagnostics
         if: failure()
         run: |
           docker compose ps
-          docker compose logs --no-color --tail=400
+          docker compose logs --no-color --tail=500
       - name: Stop stack
         if: always()
         run: docker compose down -v --remove-orphans
