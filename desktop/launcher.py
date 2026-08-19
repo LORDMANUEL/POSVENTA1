@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import webview
 
@@ -27,7 +27,7 @@ def build_url(base_url: str, mode: str) -> str:
 
 
 def main() -> None:
-    base_url = os.getenv("MZ_APP_URL", "http://localhost:8080")
+    base_url = os.getenv("MZ_APP_URL", "http://localhost:8080/admin")
     mode = executable_mode()
     title = {
         "cashier": "Mily Zebra — Cajera",
