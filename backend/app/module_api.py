@@ -43,6 +43,7 @@ EXTERNAL_GATED = {
     "music": "Requiere reproductor/audio físico y validación de zona",
     "visual": "Requiere cámara/kiosco y adaptador visual certificado",
 }
+DEFAULT_ENABLED = frozenset(FULL_INTERNAL_PROFILE)
 
 
 def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
@@ -54,7 +55,10 @@ def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
         )
     )
     if row is None:
-        return definition.core
+        # A freshly installed store is operational immediately: all software-only
+        # modules that passed the stable gate are enabled by default. External-gated
+        # modules remain off until an explicit certified integration is available.
+        return definition.core or key in DEFAULT_ENABLED
     return row.enabled
 
 
@@ -119,8 +123,6 @@ def enable_full_internal_profile(
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN)),
 ) -> dict:
     enabled: list[str] = []
-    # Registry insertion order is dependency-safe for this profile; explicitly verify each
-    # dependency so a future registry edit fails closed instead of enabling a broken graph.
     remaining = set(FULL_INTERNAL_PROFILE)
     while remaining:
         progressed = False
