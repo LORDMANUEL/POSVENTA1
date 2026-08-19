@@ -3,6 +3,15 @@ import { clearSnapshots, isSnapshotPath, loadSnapshot, saveSnapshot } from './of
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
+export function tenantSlugFromLocation(locationLike = globalThis.location) {
+  try {
+    const params = new URLSearchParams(locationLike?.search || '');
+    return String(params.get('tenant') || '').trim().toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 export class ApiError extends Error {
   constructor(message, status = 0, body = null, network = false) {
     super(message);
@@ -57,7 +66,11 @@ export class ApiClient {
   }
 
   bootstrap(data, installationCode = '') {
-    const supplied = String(installationCode || window.prompt('Ingrese el código de primera instalación mostrado por install.sh:') || '').trim();
+    const supplied = String(
+      installationCode
+      || window.prompt('Ingrese el código de primera instalación guardado por el instalador en .bootstrap-token:')
+      || '',
+    ).trim();
     if (!supplied) throw new ApiError('Se requiere el código de primera instalación', 403);
     return this.request('/bootstrap', {
       method: 'POST',
@@ -67,7 +80,8 @@ export class ApiClient {
   }
 
   async login(email, password, tenantSlug = '') {
-    const username = tenantSlug ? `${tenantSlug}:${email}` : email;
+    const selectedTenant = String(tenantSlug || tenantSlugFromLocation()).trim().toLowerCase();
+    const username = selectedTenant ? `${selectedTenant}:${email}` : email;
     const form = new URLSearchParams({ username, password });
     let response;
     try {
@@ -82,7 +96,7 @@ export class ApiClient {
       throw new ApiError('Sin conexión con el servidor', 0, null, true, { cause: error });
     }
     const body = await response.json();
-    if (response.status === 409 && !tenantSlug && String(body?.detail || '').includes('varias tiendas')) {
+    if (response.status === 409 && !selectedTenant && String(body?.detail || '').includes('varias tiendas')) {
       const selected = String(window.prompt('Este correo pertenece a varias tiendas. Ingrese el identificador de su tienda:') || '').trim();
       if (selected) return this.login(email, password, selected);
     }
