@@ -57,6 +57,7 @@ if ! docker compose version >/dev/null 2>&1; then
   apt-get install -y docker-compose-v2
 fi
 
+# Redis recomienda memory overcommit para evitar fallos de persistencia bajo presión.
 printf 'vm.overcommit_memory=1\n' > /etc/sysctl.d/99-mily-zebra.conf
 sysctl -w vm.overcommit_memory=1 >/dev/null || true
 
@@ -64,6 +65,8 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
+# Nunca permita arrancar producción con secretos de ejemplo. Si siguen presentes,
+# se reemplazan sin alterar secretos ya configurados por el operador.
 if grep -q 'POSTGRES_PASSWORD=change-this-in-production' .env; then
   DB_PASSWORD="$(openssl rand -hex 24)"
   sed -i "s|^POSTGRES_PASSWORD=change-this-in-production|POSTGRES_PASSWORD=${DB_PASSWORD}|" .env
@@ -142,8 +145,7 @@ else
 fi
 
 echo "Abra /admin y use 'Primera instalación'."
-echo "Código de primera instalación: ${BOOTSTRAP_TOKEN}"
-echo "También quedó guardado con permisos 600 en: ${ROOT_DIR}/.bootstrap-token"
+echo "Código de primera instalación guardado con permisos 600 en: ${ROOT_DIR}/.bootstrap-token"
 echo "Después de crear el propietario, el endpoint de bootstrap queda cerrado por estado de base de datos."
 echo "Backup completo (BD + fotos): sudo ./scripts/backup.sh"
 echo "Restore completo: consulte docs/MANUAL_INSTALACION.md"

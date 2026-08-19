@@ -62,6 +62,8 @@ DRIVER_LOGIN=$(curl -fsS -X POST "$API/auth/login" --data-urlencode 'username=dr
 DRIVER_TOKEN=$(printf '%s' "$DRIVER_LOGIN" | json_get access_token)
 ASSIGNED=$(request GET "$API/ops/deliveries" '' "$DRIVER_TOKEN")
 python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); did=sys.argv[2]; assert any(r["id"]==did for r in rows), rows' "$ASSIGNED" "$DELIVERY_ID"
+OUT_FOR_DELIVERY=$(request POST "$API/ops/deliveries/$DELIVERY_ID/status" '{"status":"out_for_delivery","proof_note":null}' "$DRIVER_TOKEN")
+printf '%s' "$OUT_FOR_DELIVERY" | grep -q '"status":"out_for_delivery"'
 DELIVERED=$(request POST "$API/ops/deliveries/$DELIVERY_ID/status" '{"status":"delivered","proof_note":"Entregado conforme en Stable Gate."}' "$DRIVER_TOKEN")
 printf '%s' "$DELIVERED" | grep -q '"status":"delivered"'
 

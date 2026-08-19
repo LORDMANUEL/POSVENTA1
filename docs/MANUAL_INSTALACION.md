@@ -53,22 +53,22 @@ El instalador soportado:
 13. Worker y web esperan a que la API esté saludable.
 14. Levanta Caddy/proxy y almacenamiento persistente.
 15. Comprueba API, PostgreSQL, Redis, migración y frontend antes de reportar éxito.
-16. Guarda el código de primera instalación en `.bootstrap-token` con permisos `600` y lo muestra una vez en consola.
+16. Guarda el código de primera instalación en `.bootstrap-token` con permisos `600`; no imprime el secreto en logs por defecto.
 
 Si cualquiera de esas verificaciones falla, la instalación termina con código distinto de cero.
 
 ## 4. Primera configuración segura
 
-Al terminar `install.sh` verá:
-
-```text
-Código de primera instalación: <secreto>
-```
-
-El mismo valor queda disponible para root en:
+Al terminar `install.sh` no se imprime el secreto. El código queda disponible únicamente para root en:
 
 ```text
 ./.bootstrap-token
+```
+
+Consúltelo localmente con:
+
+```bash
+sudo cat .bootstrap-token
 ```
 
 Abra `/admin`, seleccione **Primera instalación** e introduzca ese código cuando se solicite. `/bootstrap` exige el código y, una vez creado el primer propietario, queda cerrado por estado de base de datos aunque alguien conozca posteriormente el token.
