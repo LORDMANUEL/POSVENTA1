@@ -1,0 +1,10 @@
+{
+  "name": "Mily Zebra Commerce OS",
+  "short_name": "Mily Zebra",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fff9fc",
+  "theme_color": "#f7c6dc",
+  "lang": "es-HN",
+  "icons": []
+}

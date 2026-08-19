@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'dev/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install backend
+        working-directory: backend
+        run: pip install -e '.[dev]'
+      - name: Lint backend
+        working-directory: backend
+        run: ruff check app tests
+      - name: Test backend
+        working-directory: backend
+        run: pytest -q
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: milyzebra_ci
+          POSTGRES_USER: milyzebra
+          POSTGRES_PASSWORD: ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U milyzebra -d milyzebra_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DATABASE_URL: postgresql+psycopg://milyzebra:ci-password@127.0.0.1:5432/milyzebra_ci
+      AUTO_CREATE_SCHEMA: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install backend
+        working-directory: backend
+        run: pip install -e '.[dev]'
+      - name: Upgrade schema
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Verify migration state
+        working-directory: backend
+        run: alembic current | grep 20260818_0009
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+      - name: Test frontend logic
+        working-directory: frontend
+        run: npm run test:logic
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  desktop_contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install launcher runtime
+        run: pip install -r desktop/requirements.txt
+      - name: Test launcher contract
+        run: python -m unittest desktop/test_launcher.py -v
+
+  windows_build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build Windows executables
+        shell: powershell
+        run: .\scripts\build-windows.ps1
+      - name: Verify Windows executables
+        shell: powershell
+        run: |
+          if (-not (Test-Path 'dist-windows\MilyZebra.exe')) { throw 'MilyZebra.exe no fue generado' }
+          if (-not (Test-Path 'dist-windows\MilyZebra-Hardware-Agent.exe')) { throw 'Hardware Agent no fue generado' }
+          Get-ChildItem dist-windows\*.exe | Select-Object Name,Length
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mily-Zebra-Windows
+          path: dist-windows/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose config >/dev/null
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare CI environment
+        run: |
+          cp .env.example .env
+          sed -i 's/change-this-in-production/ci-compose-password/g' .env
+          sed -i 's/change-this-to-a-long-random-secret/ci-jwt-secret-at-least-32-characters/g' .env
+          sed -i 's/^MZ_SITE_ADDRESS=.*/MZ_SITE_ADDRESS=:80/' .env
+      - name: Build and start complete stack
+        run: docker compose up -d --build
+      - name: Verify HTTP and services
+        run: |
+          set -euo pipefail
+          set -a
+          source .env
+          set +a
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1/api/health >/tmp/health.json; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker compose ps
+              docker compose logs --no-color --tail=200
+              exit 1
+            fi
+            sleep 2
+          done
+          grep -q '"status":"ok"' /tmp/health.json
+          curl -fsS http://127.0.0.1/ >/tmp/storefront.html
+          grep -q '<div id="root"></div>' /tmp/storefront.html
+          docker compose exec -T db pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+          docker compose exec -T redis redis-cli ping | grep -q PONG
+          docker compose exec -T api alembic current | grep 20260818_0009
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=300
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  backup_restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare CI environment
+        run: |
+          cp .env.example .env
+          sed -i 's/change-this-in-production/ci-restore-password/g' .env
+          sed -i 's/change-this-to-a-long-random-secret/ci-restore-jwt-secret-at-least-32-chars/g' .env
+      - name: Start data stack
+        run: docker compose up -d --build db redis api worker web
+      - name: Wait for API
+        run: |
+          for attempt in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8000/health && exit 0
+            sleep 2
+          done
+          docker compose logs --no-color --tail=200 api db
+          exit 1
+      - name: Create probe data and full backup
+        id: backup
+        run: |
+          set -euo pipefail
+          set -a
+          source .env
+          set +a
+          docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "CREATE TABLE restore_probe(value text NOT NULL); INSERT INTO restore_probe VALUES ('database-restored');"
+          docker compose exec -T api sh -c "mkdir -p /data/media/ci && printf 'media-restored' > /data/media/ci/restore-probe.txt"
+          BACKUP_DIR="$PWD/backups-ci" bash scripts/backup-full.sh | tee /tmp/backup.log
+          BACKUP="$(tail -n 1 /tmp/backup.log)"
+          echo "path=$BACKUP" >> "$GITHUB_OUTPUT"
+      - name: Destroy probe data
+        run: |
+          set -a
+          source .env
+          set +a
+          docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "DROP TABLE restore_probe;"
+          docker compose exec -T api rm -f /data/media/ci/restore-probe.txt
+      - name: Restore full backup
+        env:
+          BACKUP: ${{ steps.backup.outputs.path }}
+        run: |
+          set -a
+          source .env
+          set +a
+          MZ_RESTORE_CONFIRM="RESTORE_${POSTGRES_DB}" bash scripts/restore-full.sh "$BACKUP"
+      - name: Verify restored database and media
+        run: |
+          set -euo pipefail
+          set -a
+          source .env
+          set +a
+          docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT value FROM restore_probe" | grep -qx 'database-restored'
+          docker compose exec -T api cat /data/media/ci/restore-probe.txt | grep -qx 'media-restored'
+          docker compose exec -T api alembic current | grep 20260818_0009
+      - name: Show restore diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=300
+      - name: Stop restore stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile Python
+        run: python -m compileall -q backend/app backend/tests backend/migrations agent desktop

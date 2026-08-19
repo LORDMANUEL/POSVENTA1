@@ -1,0 +1,11 @@
+.sf-product-image-real { padding: 0; background: #f6eef2; }
+.sf-product-image-real::after { display: none; }
+.sf-product-image-real img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sf-product-image-real > span { position: absolute; left: 14px; top: 14px; z-index: 2; padding: 7px 9px; border-radius: 999px; background: rgba(255,255,255,.9); color: #5f3b4d; box-shadow: 0 8px 20px rgba(40,20,30,.09); }
+.sf-product-image.compact { width: 58px; height: 72px; aspect-ratio: auto; border-radius: 12px; padding: 0; flex: 0 0 auto; }
+.sf-product-image.compact strong { font-size: 44px; margin: auto; }
+.sf-product-image.compact::after { display: none; }
+.sf-cart-line { grid-template-columns: 58px minmax(0,1fr) auto; align-items: center; }
+.sf-cart-copy { display: grid; gap: 4px; }
+.sf-cart-copy .sf-qty { margin-top: 6px; }
+@media (max-width: 520px) { .sf-product-image.compact { width: 50px; height: 64px; } .sf-cart-line { grid-template-columns: 50px minmax(0,1fr); } .sf-cart-line > b { grid-column: 2; text-align: left; } }
