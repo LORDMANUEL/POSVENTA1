@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .models import Branch, Product, User, UserRole
+from .module_api import require_enabled_module
 from .ops_models import (
     Customer,
     Delivery,
@@ -177,7 +178,11 @@ def create_customer(
     return customer
 
 
-@ops_router.get("/suppliers", response_model=list[SupplierOut])
+@ops_router.get(
+    "/suppliers",
+    response_model=list[SupplierOut],
+    dependencies=[Depends(require_enabled_module("purchasing"))],
+)
 def list_suppliers(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE, UserRole.AUDITOR)),
@@ -185,7 +190,12 @@ def list_suppliers(
     return list(db.scalars(select(Supplier).where(Supplier.tenant_id == user.tenant_id).order_by(Supplier.name)))
 
 
-@ops_router.post("/suppliers", response_model=SupplierOut, status_code=201)
+@ops_router.post(
+    "/suppliers",
+    response_model=SupplierOut,
+    status_code=201,
+    dependencies=[Depends(require_enabled_module("purchasing"))],
+)
 def create_supplier(
     payload: SupplierIn,
     db: Session = Depends(get_db),
@@ -200,7 +210,11 @@ def create_supplier(
     return supplier
 
 
-@ops_router.post("/purchases", status_code=201)
+@ops_router.post(
+    "/purchases",
+    status_code=201,
+    dependencies=[Depends(require_enabled_module("purchasing"))],
+)
 def create_purchase(
     payload: PurchaseIn,
     db: Session = Depends(get_db),
@@ -231,7 +245,10 @@ def create_purchase(
     return {"id": purchase.id, "status": purchase.status.value}
 
 
-@ops_router.post("/purchases/{purchase_id}/receive")
+@ops_router.post(
+    "/purchases/{purchase_id}/receive",
+    dependencies=[Depends(require_enabled_module("purchasing"))],
+)
 def receive_purchase(
     purchase_id: str,
     db: Session = Depends(get_db),
@@ -350,7 +367,10 @@ def receive_transfer(
     return {"id": transfer.id, "status": transfer.status.value}
 
 
-@ops_router.get("/deliveries")
+@ops_router.get(
+    "/deliveries",
+    dependencies=[Depends(require_enabled_module("delivery"))],
+)
 def list_deliveries(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
     query = select(Delivery).where(Delivery.tenant_id == user.tenant_id)
     if user.role == UserRole.DRIVER:
@@ -370,7 +390,11 @@ def list_deliveries(db: Session = Depends(get_db), user: User = Depends(get_curr
     ]
 
 
-@ops_router.post("/deliveries", status_code=201)
+@ops_router.post(
+    "/deliveries",
+    status_code=201,
+    dependencies=[Depends(require_enabled_module("delivery"))],
+)
 def create_delivery(
     payload: DeliveryIn,
     db: Session = Depends(get_db),
@@ -400,7 +424,10 @@ def create_delivery(
     return {"id": delivery.id, "status": delivery.status.value}
 
 
-@ops_router.post("/deliveries/{delivery_id}/status")
+@ops_router.post(
+    "/deliveries/{delivery_id}/status",
+    dependencies=[Depends(require_enabled_module("delivery"))],
+)
 def update_delivery_status(
     delivery_id: str,
     payload: DeliveryStatusIn,
