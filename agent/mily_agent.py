@@ -14,7 +14,6 @@ class AgentConfig:
     api_url: str
     token: str
     device_id: str
-    branch_id: str
     poll_seconds: float
     printer_host: str
     printer_port: int
@@ -24,15 +23,14 @@ class AgentConfig:
         api_url = os.getenv("MZ_AGENT_API_URL", "http://localhost:8000").rstrip("/")
         token = os.getenv("MZ_AGENT_TOKEN", "").strip()
         device_id = os.getenv("MZ_AGENT_DEVICE_ID", socket.gethostname()).strip()
-        branch_id = os.getenv("MZ_AGENT_BRANCH_ID", "").strip()
         poll_seconds = max(float(os.getenv("MZ_AGENT_POLL_SECONDS", "2")), 1.0)
         printer_host = os.getenv("MZ_PRINTER_HOST", "127.0.0.1")
         printer_port = int(os.getenv("MZ_PRINTER_PORT", "9100"))
         if not token:
-            raise RuntimeError("MZ_AGENT_TOKEN es obligatorio")
-        if not branch_id:
-            raise RuntimeError("MZ_AGENT_BRANCH_ID es obligatorio")
-        return cls(api_url, token, device_id, branch_id, poll_seconds, printer_host, printer_port)
+            raise RuntimeError("MZ_AGENT_TOKEN es obligatorio; enrole el dispositivo desde administración")
+        if not device_id:
+            raise RuntimeError("MZ_AGENT_DEVICE_ID es obligatorio")
+        return cls(api_url, token, device_id, poll_seconds, printer_host, printer_port)
 
 
 class PrinterBackend:
@@ -53,7 +51,6 @@ class TcpEscPosBackend(PrinterBackend):
             sock.sendall(payload)
 
     def print_bytes(self, payload: bytes) -> None:
-        # Initialize + payload + line feeds + full cut. Compatible with common ESC/POS printers.
         self._send(b"\x1b\x40" + payload + b"\n\n\n\x1d\x56\x00")
 
     def open_drawer(self) -> None:
@@ -66,21 +63,21 @@ class HardwareAgent:
         self.printer = printer
         self.client = httpx.Client(
             base_url=config.api_url,
-            headers={"Authorization": f"Bearer {config.token}"},
+            headers={
+                "X-Device-ID": config.device_id,
+                "X-Device-Token": config.token,
+            },
             timeout=15,
         )
 
     def claim(self) -> dict | None:
-        response = self.client.post(
-            "/agent/print-jobs/claim",
-            params={"device_id": self.config.device_id, "branch_id": self.config.branch_id},
-        )
+        response = self.client.post("/device/print-jobs/claim")
         response.raise_for_status()
         return response.json()
 
     def complete(self, job_id: str, success: bool, error: str | None = None) -> None:
         response = self.client.post(
-            f"/agent/print-jobs/{job_id}/complete",
+            f"/device/print-jobs/{job_id}/complete",
             params={"success": str(success).lower(), "error": error},
         )
         response.raise_for_status()
@@ -110,7 +107,7 @@ class HardwareAgent:
                     continue
                 try:
                     self.execute(job)
-                except Exception as exc:  # hardware boundary: report exact failure to server
+                except Exception as exc:
                     self.complete(job["id"], False, str(exc)[:500])
                 else:
                     self.complete(job["id"], True)
@@ -123,7 +120,7 @@ def main() -> None:
     config = AgentConfig.from_env()
     backend = TcpEscPosBackend(config.printer_host, config.printer_port)
     print(
-        f"Mily Zebra Agent {config.device_id} | branch={config.branch_id} | printer={config.printer_host}:{config.printer_port}",
+        f"Mily Zebra Agent {config.device_id} | printer={config.printer_host}:{config.printer_port}",
         flush=True,
     )
     HardwareAgent(config, backend).run_forever()
