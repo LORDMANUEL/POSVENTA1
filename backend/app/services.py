@@ -6,9 +6,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .cash_models import CashMovement
 from .models import (
     AuditEvent,
+    CashSession,
     InventoryMovement,
+    PrintJob,
     Product,
     Sale,
     SaleLine,
@@ -82,12 +85,10 @@ class InventoryService:
         )
         if product is None:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
-
         balance = cls.get_or_create_balance(db, user, branch_id, product_id)
         new_quantity = Decimal(balance.quantity) + Decimal(quantity_delta)
         if prevent_negative and new_quantity < 0:
             raise HTTPException(status_code=409, detail=f"Stock insuficiente para {product.name}")
-
         balance.quantity = new_quantity
         balance.updated_at = datetime.now(timezone.utc)
         db.add(
@@ -107,6 +108,16 @@ class InventoryService:
 
 class SalesService:
     @staticmethod
+    def _receipt_text(sale: Sale, prepared: list[tuple[Product, Decimal]]) -> str:
+        lines = ["MILY ZEBRA", "Roatan, Islas de la Bahia", "-" * 32]
+        for product, quantity in prepared:
+            total = money(Decimal(product.sale_price) * quantity)
+            lines.append(f"{product.name[:24]}")
+            lines.append(f" {quantity} x {money(Decimal(product.sale_price))} = {total}")
+        lines.extend(["-" * 32, f"TOTAL L {sale.total}", f"PAGO {sale.payment_method.upper()}", f"VENTA {sale.id[:8]}", "Gracias por elegir Mily Zebra"])
+        return "\n".join(lines)
+
+    @staticmethod
     def create_sale(
         db: Session,
         user: User,
@@ -125,6 +136,19 @@ class SalesService:
             return existing
         if not lines:
             raise HTTPException(status_code=422, detail="La venta debe incluir al menos un producto")
+
+        cash_session = None
+        if payment_method == "cash":
+            cash_session = db.scalar(
+                select(CashSession).where(
+                    CashSession.tenant_id == user.tenant_id,
+                    CashSession.branch_id == branch_id,
+                    CashSession.user_id == user.id,
+                    CashSession.closed_at.is_(None),
+                )
+            )
+            if not cash_session:
+                raise HTTPException(status_code=409, detail="Debe abrir caja antes de realizar una venta en efectivo")
 
         sale = Sale(
             tenant_id=user.tenant_id,
@@ -157,7 +181,6 @@ class SalesService:
                 raise HTTPException(status_code=422, detail="La cantidad debe ser mayor que cero")
             prepared.append((product, quantity))
 
-        # Validate and deduct within the same DB transaction.
         for product, quantity in prepared:
             InventoryService.move(
                 db,
@@ -184,6 +207,40 @@ class SalesService:
 
         sale.subtotal = money(subtotal)
         sale.total = money(subtotal)
+
+        if cash_session:
+            db.add(
+                CashMovement(
+                    tenant_id=user.tenant_id,
+                    branch_id=branch_id,
+                    cash_session_id=cash_session.id,
+                    actor_user_id=user.id,
+                    movement_type="sale",
+                    amount=sale.total,
+                    reason="Venta en efectivo",
+                    reference_type="sale",
+                    reference_id=sale.id,
+                )
+            )
+
+        db.add(
+            PrintJob(
+                tenant_id=user.tenant_id,
+                branch_id=branch_id,
+                job_type="receipt",
+                payload=json.dumps({"text": SalesService._receipt_text(sale, prepared)}, ensure_ascii=False),
+            )
+        )
+        if payment_method == "cash":
+            db.add(
+                PrintJob(
+                    tenant_id=user.tenant_id,
+                    branch_id=branch_id,
+                    job_type="drawer",
+                    payload="{}",
+                )
+            )
+
         AuditService.record(
             db,
             user,
