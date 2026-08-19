@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     jwt_ttl_minutes: int = 480
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
     auto_create_schema: bool = True
+    media_root: str = "/data/media"
+    max_image_bytes: int = 10 * 1024 * 1024
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
