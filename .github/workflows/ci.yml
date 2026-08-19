@@ -90,6 +90,30 @@ jobs:
       - name: Test launcher contract
         run: python -m unittest desktop/test_launcher.py -v
 
+  windows_build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build Windows executables
+        shell: powershell
+        run: .\scripts\build-windows.ps1
+      - name: Verify Windows executables
+        shell: powershell
+        run: |
+          if (-not (Test-Path 'dist-windows\MilyZebra.exe')) { throw 'MilyZebra.exe no fue generado' }
+          if (-not (Test-Path 'dist-windows\MilyZebra-Hardware-Agent.exe')) { throw 'Hardware Agent no fue generado' }
+          Get-ChildItem dist-windows\*.exe | Select-Object Name,Length
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mily-Zebra-Windows
+          path: dist-windows/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
   compose:
     runs-on: ubuntu-latest
     steps:
