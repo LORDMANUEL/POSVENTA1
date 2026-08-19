@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .accounting_integration import AccountingIntegrationService
 from .cash_models import CashMovement
 from .commerce_models import ReservationStatus, StockReservation
 from .integrity import (
@@ -385,6 +386,7 @@ class SalesService:
                 )
             )
 
+        AccountingIntegrationService.post_sale(db, user, sale, prepared)
         AuditService.record(
             db,
             user,
