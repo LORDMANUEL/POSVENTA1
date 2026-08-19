@@ -19,6 +19,7 @@ import {
 import ModuleSettings from './ModuleSettings';
 import CatalogImportTools from './CatalogImportTools';
 import OfflineSalesStatus, { submitSaleResilient } from './OfflineSalesStatus';
+import ReturnsView from './PostSales';
 import { allowedViewsForRole, defaultViewForRole } from './navigation';
 
 const money = new Intl.NumberFormat('es-HN', { style: 'currency', currency: 'HNL' });
@@ -26,6 +27,7 @@ const money = new Intl.NumberFormat('es-HN', { style: 'currency', currency: 'HNL
 const labels = {
   home: 'Panel de tienda',
   pos: 'Punto de venta',
+  returns: 'Devoluciones',
   products: 'Catálogo',
   inventory: 'Inventario',
   cash: 'Caja',
@@ -111,15 +113,29 @@ function Cash() {
 function App() {
   const [me, setMe] = useState(null); const [products, setProducts] = useState([]); const [inventory, setInventory] = useState([]); const [loading, setLoading] = useState(Boolean(api.token));
   const [view, setView] = useState('home');
+  const [online, setOnline] = useState(() => navigator.onLine !== false);
   const refresh = async () => {
     const [meData, productData, stockData] = await Promise.all([api.request('/me'), api.request('/products'), api.request('/inventory')]);
     setMe(meData); setProducts(productData); setInventory(stockData);
     return meData;
   };
   useEffect(() => {
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    const onConnectivity = (event) => setOnline(Boolean(event.detail?.online));
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('mz-connectivity', onConnectivity);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('mz-connectivity', onConnectivity);
+    };
+  }, []);
+  useEffect(() => {
     if (api.token) refresh()
       .then((meData) => setView(defaultViewForRole(meData.role)))
-      .catch(() => api.setToken(''))
+      .catch((error) => { if (!error?.network) api.setToken(''); })
       .finally(() => setLoading(false));
   }, []);
   const allowed = useMemo(() => allowedViewsForRole(me?.role), [me?.role]);
@@ -131,7 +147,7 @@ function App() {
     if (managementOnly.has(item) && !['owner', 'admin', 'manager', 'auditor'].includes(me.role)) return false;
     return true;
   });
-  return <div className="app-shell"><aside className="sidebar"><div className="logo"><span>MZ</span><div><strong>Mily Zebra</strong><small>Commerce OS</small></div></div><nav>{nav.map((item) => <button key={item} className={view === item ? 'active' : ''} onClick={() => setView(item)}>{labels[item]}</button>)}</nav><div className="user-card"><strong>{me.full_name}</strong><small>{me.role}</small><button className="link" onClick={() => { api.setToken(''); location.reload(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Roatán · operación en vivo</p><h1>{labels[view] || 'Mily Zebra'}</h1></div><div className="status"><i /> API conectada</div></header>{view === 'home' && <div className="dashboard"><article><small>Productos</small><strong>{products.length}</strong><span>catálogo activo</span></article><article><small>Unidades visibles</small><strong>{inventory.reduce((sum, row) => sum + Number(row.quantity), 0)}</strong><span>en inventario</span></article><article><small>Perfil</small><strong>{me.role}</strong><span>según RBAC del servidor</span></article></div>}{view === 'analytics' && <AnalyticsView />}{view === 'pos' && <Pos products={products} refresh={refresh} />}{view === 'products' && <><section className="panel"><div className="panel-title"><div><p className="eyebrow">Catálogo</p><h2>Nuevo producto</h2></div></div><ProductForm onSaved={refresh} /><div className="product-list">{products.map((p) => <div key={p.id}><span><strong>{p.name}</strong><small>{p.sku} · {p.category}</small></span><b>{money.format(Number(p.sale_price))}</b></div>)}</div></section><CatalogImportTools onCatalogCommitted={refresh} /></>}{view === 'inventory' && <Inventory rows={inventory} products={products} refresh={refresh} />}{view === 'cash' && <Cash />}{view === 'customers' && <CustomersView />}{view === 'crm' && <CrmView />}{view === 'suppliers' && <SuppliersView />}{view === 'purchases' && <PurchasesView products={products} refreshInventory={refresh} />}{view === 'transfers' && <TransfersView products={products} refreshInventory={refresh} />}{view === 'deliveries' && <DeliveriesView me={me} />}{view === 'finance' && <FinanceView />}{view === 'accounting' && <AccountingView />}{view === 'people' && <PeopleView />}{view === 'automation' && <AutomationView />}{view === 'modules' && <ModuleSettings />}{view === 'admin' && <UsersDevicesView />}</main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="logo"><span>MZ</span><div><strong>Mily Zebra</strong><small>Commerce OS</small></div></div><nav>{nav.map((item) => <button key={item} className={view === item ? 'active' : ''} onClick={() => setView(item)}>{labels[item]}</button>)}</nav><div className="user-card"><strong>{me.full_name}</strong><small>{me.role}</small><button className="link" onClick={() => { api.setToken(''); location.reload(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Roatán · operación</p><h1>{labels[view] || 'Mily Zebra'}</h1></div><div className="status"><i /> {online ? 'API conectada' : 'Modo offline'}</div></header>{view === 'home' && <div className="dashboard"><article><small>Productos</small><strong>{products.length}</strong><span>catálogo activo</span></article><article><small>Unidades visibles</small><strong>{inventory.reduce((sum, row) => sum + Number(row.quantity), 0)}</strong><span>en inventario</span></article><article><small>Perfil</small><strong>{me.role}</strong><span>según RBAC del servidor</span></article></div>}{view === 'analytics' && <AnalyticsView />}{view === 'pos' && <Pos products={products} refresh={refresh} />}{view === 'returns' && <ReturnsView refreshInventory={refresh} />}{view === 'products' && <><section className="panel"><div className="panel-title"><div><p className="eyebrow">Catálogo</p><h2>Nuevo producto</h2></div></div><ProductForm onSaved={refresh} /><div className="product-list">{products.map((p) => <div key={p.id}><span><strong>{p.name}</strong><small>{p.sku} · {p.category}</small></span><b>{money.format(Number(p.sale_price))}</b></div>)}</div></section><CatalogImportTools onCatalogCommitted={refresh} /></>}{view === 'inventory' && <Inventory rows={inventory} products={products} refresh={refresh} />}{view === 'cash' && <Cash />}{view === 'customers' && <CustomersView />}{view === 'crm' && <CrmView />}{view === 'suppliers' && <SuppliersView />}{view === 'purchases' && <PurchasesView products={products} refreshInventory={refresh} />}{view === 'transfers' && <TransfersView products={products} refreshInventory={refresh} />}{view === 'deliveries' && <DeliveriesView me={me} />}{view === 'finance' && <FinanceView />}{view === 'accounting' && <AccountingView />}{view === 'people' && <PeopleView />}{view === 'automation' && <AutomationView />}{view === 'modules' && <ModuleSettings />}{view === 'admin' && <UsersDevicesView />}</main></div>;
 }
 
 export default App;
