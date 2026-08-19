@@ -104,10 +104,49 @@ function Inventory({ rows, products, refresh }) {
 }
 
 function Cash() {
-  const [opening, setOpening] = useState('0'); const [session, setSession] = useState(null); const [closing, setClosing] = useState('0'); const [message, setMessage] = useState('');
-  const open = async () => { const result = await api.request('/cash/open', { method: 'POST', body: JSON.stringify({ opening_amount: opening }) }); setSession(result); setMessage('Caja abierta correctamente'); };
-  const close = async () => { if (!session) return; await api.request(`/cash/${session.id}/close`, { method: 'POST', body: JSON.stringify({ closing_amount: closing }) }); setSession(null); setMessage('Caja cerrada y auditada'); };
-  return <section className="panel narrow"><p className="eyebrow">Control de efectivo</p><h2>Caja diaria</h2>{!session ? <div className="stack"><label>Fondo inicial<input type="number" value={opening} onChange={(e) => setOpening(e.target.value)} /></label><button className="primary" onClick={open}>Abrir caja</button></div> : <div className="stack"><div className="notice">Sesión {session.id.slice(0, 8)} activa</div><label>Efectivo contado<input type="number" value={closing} onChange={(e) => setClosing(e.target.value)} /></label><button className="danger" onClick={close}>Cerrar caja</button></div>}{message && <p className="muted">{message}</p>}</section>;
+  const [opening, setOpening] = useState('0');
+  const [session, setSession] = useState(null);
+  const [closing, setClosing] = useState('0');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  const loadCurrent = async () => {
+    try {
+      const current = await api.request('/cash/current');
+      setSession(current);
+      if (current?.expected_amount != null) setClosing(current.expected_amount);
+      return current;
+    } catch (err) {
+      setError(err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadCurrent(); }, []);
+
+  const open = async () => {
+    setMessage(''); setError('');
+    try {
+      await api.request('/cash/open', { method: 'POST', body: JSON.stringify({ opening_amount: opening }) });
+      const current = await loadCurrent();
+      if (current) setMessage('Caja abierta correctamente');
+    } catch (err) { setError(err.message); }
+  };
+  const close = async () => {
+    if (!session) return;
+    setMessage(''); setError('');
+    try {
+      await api.request(`/cash/${session.id}/close`, { method: 'POST', body: JSON.stringify({ closing_amount: closing }) });
+      await loadCurrent();
+      setMessage('Caja cerrada y auditada');
+    } catch (err) { setError(err.message); }
+  };
+
+  if (loading) return <section className="panel narrow"><p className="muted">Recuperando caja actual…</p></section>;
+  return <section className="panel narrow"><p className="eyebrow">Control de efectivo</p><h2>Caja diaria</h2>{!session ? <div className="stack"><label>Fondo inicial<input type="number" value={opening} onChange={(e) => setOpening(e.target.value)} /></label><button className="primary" onClick={open}>Abrir caja</button></div> : <div className="stack"><div className="notice">Sesión {session.id.slice(0, 8)} activa</div><p className="muted">Fondo: {money.format(Number(session.opening_amount))} · esperado: {money.format(Number(session.expected_amount || 0))}</p><label>Efectivo contado<input type="number" value={closing} onChange={(e) => setClosing(e.target.value)} /></label><button className="danger" onClick={close}>Cerrar caja</button></div>}{message && <p className="muted">{message}</p>}{error && <div className="error">{error}</div>}</section>;
 }
 
 function App() {
