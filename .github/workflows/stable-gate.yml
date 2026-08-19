@@ -24,7 +24,7 @@ jobs:
       - name: Build and start stable stack
         run: docker compose up -d --build
       - name: Execute end-to-end stable contract
-        run: ./scripts/stable-e2e.sh
+        run: bash scripts/stable-e2e.sh
       - name: Diagnostics
         if: failure()
         run: |
