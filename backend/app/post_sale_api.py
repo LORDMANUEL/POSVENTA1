@@ -10,11 +10,16 @@ from sqlalchemy.orm import Session
 from .cash_models import CashMovement
 from .db import get_db
 from .models import CashSession, PrintJob, Product, Sale, SaleLine, User, UserRole
+from .module_api import require_enabled_module
 from .post_sale_models import Refund, RefundStatus, ReturnLine, ReturnRecord
 from .security import require_roles
 from .services import AuditService, InventoryService, money
 
-post_sale_router = APIRouter(prefix="/post-sales", tags=["post-sales"])
+post_sale_router = APIRouter(
+    prefix="/post-sales",
+    tags=["post-sales"],
+    dependencies=[Depends(require_enabled_module("returns"))],
+)
 POST_SALE_READ_ROLES = (UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.AUDITOR)
 POST_SALE_WRITE_ROLES = (UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)
 
