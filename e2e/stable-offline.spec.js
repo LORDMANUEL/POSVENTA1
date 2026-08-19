@@ -138,6 +138,16 @@ test('tenant-qualified admin URL clears another tenant session before login', as
   expect(second.slug).toBe('mily-zebra-sps-e2e');
 });
 
+test('second tenant storefront resolves its own catalog and admin route', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(String(error)));
+  await page.goto(`${BASE}/?store=mily-zebra-sps-e2e`, { waitUntil: 'networkidle' });
+  await expect(page.getByText('Mily Zebra SPS E2E', { exact: false }).first()).toBeVisible();
+  await expect(page.getByText('Producto tenant dos', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Equipo' })).toHaveAttribute('href', '/admin?tenant=mily-zebra-sps-e2e');
+  expect(errors).toEqual([]);
+});
+
 test('public storefront renders without browser errors', async ({ page }) => {
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error)));
