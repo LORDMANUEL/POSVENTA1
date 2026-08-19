@@ -1,0 +1,14 @@
+.two-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
+.delivery-grid { display: grid; gap: 12px; }
+.delivery-card { border: 1px solid #f0e2e9; border-radius: 18px; padding: 18px; background: #fff; display: grid; gap: 14px; }
+.delivery-card h3 { margin: 9px 0 4px; font-size: 18px; }
+.delivery-card small { color: #8e7e87; }
+.delivery-actions { display: flex; gap: 9px; flex-wrap: wrap; }
+.badge { display: inline-flex; border-radius: 999px; padding: 5px 9px; font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; background: #f5edf2; color: #735568; }
+.badge.delivered { background: #edf9f1; color: #38704c; }
+.badge.failed { background: #fff0f3; color: #8f2540; }
+.badge.out_for_delivery { background: #fff5e5; color: #875d1d; }
+.token-box { display: grid; gap: 8px; margin: 18px 0; padding: 15px; border-radius: 15px; background: #fff2f8; border: 1px solid #edcede; overflow: hidden; }
+.token-box code { display: block; padding: 9px; border-radius: 9px; background: #261c24; color: #fff; overflow-wrap: anywhere; user-select: all; }
+.token-box small { color: #765e6b; }
+@media (max-width: 980px) { .two-panels { grid-template-columns: 1fr; } }
