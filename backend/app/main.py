@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .accounting_api import accounting_router
 from .admin_api import admin_router, device_router
@@ -18,12 +20,15 @@ from .finance_api import banking_router, payables_router, receivables_router
 from .fiscal_api import fiscal_router
 from .inventory_advanced_api import inventory_advanced_router
 from .knowledge_api import ai_router, rag_router
+from .media_api import media_router
 from .module_api import module_router, require_enabled_module
 from .ops_api import ops_router
 from .people_api import attendance_router, hr_router, payroll_router
 from .post_sale_api import post_sale_router
 
 settings = get_settings()
+media_path = Path(settings.media_root)
+media_path.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -36,7 +41,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.11.0",
+    version="0.11.1",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -46,6 +51,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/media", StaticFiles(directory=str(media_path)), name="media")
 
 
 @app.get("/health")
@@ -56,6 +62,7 @@ def health() -> dict[str, str]:
 app.include_router(router)
 app.include_router(ops_router)
 app.include_router(inventory_advanced_router)
+app.include_router(media_router)
 app.include_router(admin_router)
 app.include_router(device_router)
 app.include_router(module_router)
