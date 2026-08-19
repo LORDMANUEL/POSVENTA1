@@ -8,10 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .cash_models import CashMovement
 from .db import get_db
 from .models import Branch, CashSession, PrintJob, Product, StockBalance, Tenant, User, UserRole
 from .security import create_access_token, get_current_user, hash_password, require_roles, verify_password
-from .services import AuditService, InventoryService, SalesService
+from .services import AuditService, InventoryService, SalesService, money
 
 router = APIRouter()
 
@@ -74,11 +75,35 @@ class CashCloseIn(BaseModel):
     closing_amount: Decimal = Field(ge=0)
 
 
+class CashMovementIn(BaseModel):
+    movement_type: str = Field(pattern="^(cash_in|cash_out)$")
+    amount: Decimal = Field(gt=0)
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class PrintJobIn(BaseModel):
     branch_id: str | None = None
     device_id: str | None = None
     job_type: str = Field(pattern="^(receipt|label|drawer)$")
     payload: str
+
+
+def _cash_expected(db: Session, session: CashSession) -> Decimal:
+    movement_total = db.scalar(
+        select(func.coalesce(func.sum(CashMovement.amount), 0)).where(CashMovement.cash_session_id == session.id)
+    )
+    return money(Decimal(session.opening_amount) + Decimal(movement_total or 0))
+
+
+def _cash_session_for_user(db: Session, session_id: str, user: User) -> CashSession:
+    session = db.scalar(
+        select(CashSession).where(CashSession.id == session_id, CashSession.tenant_id == user.tenant_id)
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Caja no encontrada")
+    if user.role == UserRole.CASHIER and session.user_id != user.id:
+        raise HTTPException(status_code=403, detail="No puede consultar la caja de otro usuario")
+    return session
 
 
 @router.post("/bootstrap", response_model=TokenOut)
@@ -177,14 +202,7 @@ def move_inventory(
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
-    balance = InventoryService.move(
-        db,
-        user,
-        branch_id,
-        payload.product_id,
-        payload.quantity_delta,
-        payload.reason,
-    )
+    balance = InventoryService.move(db, user, branch_id, payload.product_id, payload.quantity_delta, payload.reason)
     AuditService.record(
         db,
         user,
@@ -233,7 +251,13 @@ def open_cash(
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
-    active = db.scalar(select(CashSession).where(CashSession.user_id == user.id, CashSession.closed_at.is_(None)))
+    active = db.scalar(
+        select(CashSession).where(
+            CashSession.tenant_id == user.tenant_id,
+            CashSession.user_id == user.id,
+            CashSession.closed_at.is_(None),
+        )
+    )
     if active:
         raise HTTPException(status_code=409, detail="Ya existe una caja abierta para este usuario")
     session = CashSession(
@@ -249,6 +273,73 @@ def open_cash(
     return {"id": session.id, "opening_amount": str(session.opening_amount), "opened_at": session.opened_at}
 
 
+@router.get("/cash/{session_id}/summary")
+def cash_summary(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.AUDITOR)),
+) -> dict:
+    session = _cash_session_for_user(db, session_id, user)
+    movements = db.scalars(
+        select(CashMovement).where(CashMovement.cash_session_id == session.id).order_by(CashMovement.created_at)
+    ).all()
+    expected = _cash_expected(db, session)
+    return {
+        "id": session.id,
+        "opening_amount": str(session.opening_amount),
+        "expected_amount": str(expected),
+        "closing_amount": str(session.closing_amount) if session.closing_amount is not None else None,
+        "difference": str(money(Decimal(session.closing_amount) - expected)) if session.closing_amount is not None else None,
+        "closed_at": session.closed_at,
+        "movements": [
+            {
+                "id": movement.id,
+                "type": movement.movement_type,
+                "amount": str(movement.amount),
+                "reason": movement.reason,
+                "reference_type": movement.reference_type,
+                "reference_id": movement.reference_id,
+                "created_at": movement.created_at,
+            }
+            for movement in movements
+        ],
+    }
+
+
+@router.post("/cash/{session_id}/movements", status_code=201)
+def create_cash_movement(
+    session_id: str,
+    payload: CashMovementIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
+) -> dict:
+    session = _cash_session_for_user(db, session_id, user)
+    if session.closed_at is not None:
+        raise HTTPException(status_code=409, detail="La caja ya está cerrada")
+    signed_amount = money(payload.amount if payload.movement_type == "cash_in" else -payload.amount)
+    movement = CashMovement(
+        tenant_id=user.tenant_id,
+        branch_id=session.branch_id,
+        cash_session_id=session.id,
+        actor_user_id=user.id,
+        movement_type=payload.movement_type,
+        amount=signed_amount,
+        reason=payload.reason,
+    )
+    db.add(movement)
+    db.flush()
+    AuditService.record(
+        db,
+        user,
+        "cash.movement_created",
+        "cash_movement",
+        movement.id,
+        {"type": movement.movement_type, "amount": str(movement.amount), "session_id": session.id},
+    )
+    db.commit()
+    return {"id": movement.id, "type": movement.movement_type, "amount": str(movement.amount)}
+
+
 @router.post("/cash/{session_id}/close")
 def close_cash(
     session_id: str,
@@ -256,22 +347,30 @@ def close_cash(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)),
 ) -> dict:
-    session = db.scalar(
-        select(CashSession).where(
-            CashSession.id == session_id,
-            CashSession.tenant_id == user.tenant_id,
-            CashSession.closed_at.is_(None),
-        )
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="Caja abierta no encontrada")
-    if user.role == UserRole.CASHIER and session.user_id != user.id:
-        raise HTTPException(status_code=403, detail="No puede cerrar la caja de otro usuario")
-    session.closing_amount = payload.closing_amount
+    session = _cash_session_for_user(db, session_id, user)
+    if session.closed_at is not None:
+        raise HTTPException(status_code=409, detail="La caja ya está cerrada")
+    expected = _cash_expected(db, session)
+    session.expected_amount = expected
+    session.closing_amount = money(payload.closing_amount)
     session.closed_at = datetime.now(timezone.utc)
-    AuditService.record(db, user, "cash.closed", "cash_session", session.id, {"closing": str(payload.closing_amount)})
+    difference = money(Decimal(session.closing_amount) - expected)
+    AuditService.record(
+        db,
+        user,
+        "cash.closed",
+        "cash_session",
+        session.id,
+        {"expected": str(expected), "counted": str(session.closing_amount), "difference": str(difference)},
+    )
     db.commit()
-    return {"id": session.id, "closing_amount": str(session.closing_amount), "closed_at": session.closed_at}
+    return {
+        "id": session.id,
+        "expected_amount": str(expected),
+        "closing_amount": str(session.closing_amount),
+        "difference": str(difference),
+        "closed_at": session.closed_at,
+    }
 
 
 @router.post("/print-jobs", status_code=201)
