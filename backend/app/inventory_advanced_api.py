@@ -14,7 +14,11 @@ from .module_api import require_enabled_module
 from .security import require_roles
 from .services import AuditService, InventoryService
 
-inventory_advanced_router = APIRouter(prefix="/inventory-advanced", tags=["inventory-advanced"], dependencies=[Depends(require_enabled_module("inventory"))])
+inventory_advanced_router = APIRouter(
+    prefix="/inventory-advanced",
+    tags=["inventory-advanced"],
+    dependencies=[Depends(require_enabled_module("inventory"))],
+)
 
 
 class CountLineIn(BaseModel):
@@ -51,11 +55,21 @@ def _branch_id(payload_branch: str | None, user: User) -> str:
 
 
 @inventory_advanced_router.post("/counts", status_code=201)
-def create_count(payload: CountIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE))) -> dict:
+def create_count(
+    payload: CountIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+) -> dict:
     branch_id = _branch_id(payload.branch_id, user)
     if not db.scalar(select(Branch.id).where(Branch.id == branch_id, Branch.tenant_id == user.tenant_id)):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
-    count = StockCount(tenant_id=user.tenant_id, branch_id=branch_id, created_by_user_id=user.id, note=payload.note)
+    count = StockCount(
+        tenant_id=user.tenant_id,
+        branch_id=branch_id,
+        created_by_user_id=user.id,
+        status="pending_approval",
+        note=payload.note,
+    )
     db.add(count)
     db.flush()
     seen: set[str] = set()
@@ -66,61 +80,156 @@ def create_count(payload: CountIn, db: Session = Depends(get_db), user: User = D
         product = db.scalar(select(Product).where(Product.id == item.product_id, Product.tenant_id == user.tenant_id))
         if not product:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
-        balance = db.scalar(select(StockBalance).where(StockBalance.tenant_id == user.tenant_id, StockBalance.branch_id == branch_id, StockBalance.product_id == product.id))
+        balance = db.scalar(
+            select(StockBalance).where(
+                StockBalance.tenant_id == user.tenant_id,
+                StockBalance.branch_id == branch_id,
+                StockBalance.product_id == product.id,
+            )
+        )
         system_qty = Decimal(balance.quantity) if balance else Decimal("0")
-        db.add(StockCountLine(stock_count_id=count.id, product_id=product.id, system_quantity=system_qty, counted_quantity=item.counted_quantity))
-    AuditService.record(db, user, "stock_count.created", "stock_count", count.id, {"lines": len(payload.lines)})
+        db.add(
+            StockCountLine(
+                stock_count_id=count.id,
+                product_id=product.id,
+                system_quantity=system_qty,
+                counted_quantity=item.counted_quantity,
+            )
+        )
+    AuditService.record(
+        db,
+        user,
+        "stock_count.created",
+        "stock_count",
+        count.id,
+        {"lines": len(payload.lines), "status": count.status},
+    )
     db.commit()
     return {"id": count.id, "status": count.status, "lines": len(payload.lines)}
 
 
 @inventory_advanced_router.post("/counts/{count_id}/approve")
-def approve_count(count_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
-    count = db.scalar(select(StockCount).where(StockCount.id == count_id, StockCount.tenant_id == user.tenant_id))
+def approve_count(
+    count_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
+) -> dict:
+    count = db.scalar(
+        select(StockCount)
+        .where(StockCount.id == count_id, StockCount.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
     if not count:
         raise HTTPException(status_code=404, detail="Conteo no encontrado")
     if count.status == "approved":
         return {"id": count.id, "status": count.status, "approved_at": count.approved_at}
+    if count.status != "pending_approval":
+        raise HTTPException(status_code=409, detail="El conteo no está pendiente de aprobación")
+    if count.created_by_user_id == user.id:
+        raise HTTPException(
+            status_code=409,
+            detail="El usuario que realizó el conteo no puede aprobar su propio ajuste",
+        )
     lines = db.scalars(select(StockCountLine).where(StockCountLine.stock_count_id == count.id)).all()
     adjustments = 0
     for line in lines:
         delta = Decimal(line.counted_quantity) - Decimal(line.system_quantity)
         if delta != 0:
-            InventoryService.move(db, user, count.branch_id, line.product_id, delta, "stock_count_adjustment", "stock_count", count.id, prevent_negative=True)
+            InventoryService.move(
+                db,
+                user,
+                count.branch_id,
+                line.product_id,
+                delta,
+                "stock_count_adjustment",
+                "stock_count",
+                count.id,
+                prevent_negative=True,
+            )
             adjustments += 1
     count.status = "approved"
     count.approved_by_user_id = user.id
     count.approved_at = datetime.now(timezone.utc)
-    AuditService.record(db, user, "stock_count.approved", "stock_count", count.id, {"adjustments": adjustments})
+    AuditService.record(
+        db,
+        user,
+        "stock_count.approved",
+        "stock_count",
+        count.id,
+        {"adjustments": adjustments, "counted_by": count.created_by_user_id},
+    )
     db.commit()
-    return {"id": count.id, "status": count.status, "adjustments": adjustments, "approved_at": count.approved_at}
+    return {
+        "id": count.id,
+        "status": count.status,
+        "adjustments": adjustments,
+        "approved_at": count.approved_at,
+    }
 
 
 @inventory_advanced_router.put("/replenishment-rules")
-def upsert_replenishment_rule(payload: ReplenishmentRuleIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE))) -> dict:
+def upsert_replenishment_rule(
+    payload: ReplenishmentRuleIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+) -> dict:
     if payload.target_quantity < payload.min_quantity:
         raise HTTPException(status_code=422, detail="Objetivo no puede ser menor al mínimo")
     branch_id = _branch_id(payload.branch_id, user)
-    row = db.scalar(select(ReplenishmentRule).where(ReplenishmentRule.tenant_id == user.tenant_id, ReplenishmentRule.branch_id == branch_id, ReplenishmentRule.product_id == payload.product_id))
+    row = db.scalar(
+        select(ReplenishmentRule).where(
+            ReplenishmentRule.tenant_id == user.tenant_id,
+            ReplenishmentRule.branch_id == branch_id,
+            ReplenishmentRule.product_id == payload.product_id,
+        )
+    )
     if row is None:
-        row = ReplenishmentRule(tenant_id=user.tenant_id, branch_id=branch_id, product_id=payload.product_id, min_quantity=payload.min_quantity, target_quantity=payload.target_quantity)
+        row = ReplenishmentRule(
+            tenant_id=user.tenant_id,
+            branch_id=branch_id,
+            product_id=payload.product_id,
+            min_quantity=payload.min_quantity,
+            target_quantity=payload.target_quantity,
+        )
         db.add(row)
     else:
         row.min_quantity = payload.min_quantity
         row.target_quantity = payload.target_quantity
     db.commit()
-    return {"id": row.id, "branch_id": row.branch_id, "product_id": row.product_id, "min_quantity": str(row.min_quantity), "target_quantity": str(row.target_quantity)}
+    return {
+        "id": row.id,
+        "branch_id": row.branch_id,
+        "product_id": row.product_id,
+        "min_quantity": str(row.min_quantity),
+        "target_quantity": str(row.target_quantity),
+    }
 
 
 @inventory_advanced_router.get("/replenishment-suggestions")
-def replenishment_suggestions(db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE, UserRole.AUDITOR))) -> list[dict]:
+def replenishment_suggestions(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE, UserRole.AUDITOR)),
+) -> list[dict]:
     rules = db.scalars(select(ReplenishmentRule).where(ReplenishmentRule.tenant_id == user.tenant_id)).all()
     result = []
     for rule in rules:
-        balance = db.scalar(select(StockBalance).where(StockBalance.tenant_id == user.tenant_id, StockBalance.branch_id == rule.branch_id, StockBalance.product_id == rule.product_id))
+        balance = db.scalar(
+            select(StockBalance).where(
+                StockBalance.tenant_id == user.tenant_id,
+                StockBalance.branch_id == rule.branch_id,
+                StockBalance.product_id == rule.product_id,
+            )
+        )
         qty = Decimal(balance.quantity) if balance else Decimal("0")
         if qty <= Decimal(rule.min_quantity):
-            result.append({"branch_id": rule.branch_id, "product_id": rule.product_id, "quantity": str(qty), "suggested_quantity": str(max(Decimal("0"), Decimal(rule.target_quantity) - qty))})
+            result.append(
+                {
+                    "branch_id": rule.branch_id,
+                    "product_id": rule.product_id,
+                    "quantity": str(qty),
+                    "suggested_quantity": str(max(Decimal("0"), Decimal(rule.target_quantity) - qty)),
+                }
+            )
     return result
 
 
@@ -129,19 +238,39 @@ def build_zpl(product: Product, copies: int, include_qr: bool) -> str:
     sku = product.sku.replace("^", " ")[:30]
     barcode = (product.barcode or product.sku).replace("^", " ")[:40]
     qr = f"^FO310,45^BQN,2,4^FDLA,{barcode}^FS" if include_qr else ""
-    return f"^XA^PW600^LL300^CF0,28^FO25,25^FD{name}^FS^CF0,22^FO25,70^FDSKU: {sku}^FS^FO25,110^BY2^BCN,80,Y,N,N^FD{barcode}^FS{qr}^PQ{copies}^XZ"
+    return (
+        f"^XA^PW600^LL300^CF0,28^FO25,25^FD{name}^FS^CF0,22^FO25,70^FDSKU: {sku}^FS"
+        f"^FO25,110^BY2^BCN,80,Y,N,N^FD{barcode}^FS{qr}^PQ{copies}^XZ"
+    )
 
 
 @inventory_advanced_router.post("/labels", status_code=201)
-def queue_label(payload: LabelRequestIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE))) -> dict:
+def queue_label(
+    payload: LabelRequestIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
+) -> dict:
     branch_id = _branch_id(payload.branch_id, user)
     product = db.scalar(select(Product).where(Product.id == payload.product_id, Product.tenant_id == user.tenant_id))
     if not product:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
     zpl = build_zpl(product, payload.copies, payload.include_qr)
-    job = PrintJob(tenant_id=user.tenant_id, branch_id=branch_id, device_id=payload.device_id, job_type="label", payload=json.dumps({"protocol": "zpl", "raw": zpl}, ensure_ascii=False))
+    job = PrintJob(
+        tenant_id=user.tenant_id,
+        branch_id=branch_id,
+        device_id=payload.device_id,
+        job_type="label",
+        payload=json.dumps({"protocol": "zpl", "raw": zpl}, ensure_ascii=False),
+    )
     db.add(job)
     db.flush()
-    AuditService.record(db, user, "label.queued", "print_job", job.id, {"product_id": product.id, "copies": payload.copies})
+    AuditService.record(
+        db,
+        user,
+        "label.queued",
+        "print_job",
+        job.id,
+        {"product_id": product.id, "copies": payload.copies},
+    )
     db.commit()
     return {"id": job.id, "status": job.status.value, "protocol": "zpl"}
