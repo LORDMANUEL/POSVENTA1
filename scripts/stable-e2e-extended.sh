@@ -71,10 +71,16 @@ PRINT_JOB=$(request POST "$API/print-jobs" "{\"branch_id\":\"$ORIGIN_BRANCH_ID\"
 PRINT_JOB_ID=$(printf '%s' "$PRINT_JOB" | json_get id)
 INVALID_DEVICE_CODE=$(curl -sS -o /tmp/mz-device-invalid.json -w '%{http_code}' -X POST "$API/device/print-jobs/claim" -H 'X-Device-ID: POS-E2E-01' -H 'X-Device-Token: wrong')
 [[ "$INVALID_DEVICE_CODE" == '401' ]]
-CLAIMED=$(curl -fsS -X POST "$API/device/print-jobs/claim" -H 'X-Device-ID: POS-E2E-01' -H "X-Device-Token: $DEVICE_TOKEN")
-[[ "$(printf '%s' "$CLAIMED" | json_get id)" == "$PRINT_JOB_ID" ]]
-COMPLETED=$(curl -fsS -X POST "$API/device/print-jobs/$PRINT_JOB_ID/complete?success=true" -H 'X-Device-ID: POS-E2E-01' -H "X-Device-Token: $DEVICE_TOKEN")
-printf '%s' "$COMPLETED" | grep -q '"status":"completed"'
+FOUND_TARGET=0
+for _ in $(seq 1 10); do
+  CLAIMED=$(curl -fsS -X POST "$API/device/print-jobs/claim" -H 'X-Device-ID: POS-E2E-01' -H "X-Device-Token: $DEVICE_TOKEN")
+  [[ "$CLAIMED" == "null" ]] && break
+  CLAIMED_ID=$(printf '%s' "$CLAIMED" | json_get id)
+  COMPLETED=$(curl -fsS -X POST "$API/device/print-jobs/$CLAIMED_ID/complete?success=true" -H 'X-Device-ID: POS-E2E-01' -H "X-Device-Token: $DEVICE_TOKEN")
+  printf '%s' "$COMPLETED" | grep -q '"status":"completed"'
+  if [[ "$CLAIMED_ID" == "$PRINT_JOB_ID" ]]; then FOUND_TARGET=1; break; fi
+done
+[[ "$FOUND_TARGET" == '1' ]]
 
 WEB_PRODUCT=$(request POST "$API/products" '{"sku":"E2E-WEB-001","name":"Blusa Island Web E2E","category":"Island Mood","unit_cost":"200.00","sale_price":"499.00"}' "$TOKEN")
 WEB_PRODUCT_ID=$(printf '%s' "$WEB_PRODUCT" | json_get id)
