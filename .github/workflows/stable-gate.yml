@@ -43,7 +43,19 @@ jobs:
           MZ_E2E_BASE_URL: http://127.0.0.1
           MZ_E2E_EMAIL: owner.e2e@milyzebra.test
           MZ_E2E_PASSWORD: StableE2E-2026!
-        run: npx playwright test e2e/stable-offline.spec.js --reporter=line
+        run: |
+          set -o pipefail
+          npx playwright test e2e/stable-offline.spec.js --reporter=line 2>&1 | tee playwright-output.log
+      - name: Upload Chromium evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-chromium-evidence
+          path: |
+            playwright-output.log
+            test-results/**
+          if-no-files-found: warn
+          retention-days: 14
       - name: Diagnostics
         if: failure()
         run: |
