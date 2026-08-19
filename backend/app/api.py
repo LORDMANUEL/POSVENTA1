@@ -110,6 +110,29 @@ def _cash_session_for_user(db: Session, session_id: str, user: User) -> CashSess
     return session
 
 
+def _current_cash_for_user(db: Session, user: User) -> CashSession | None:
+    return db.scalar(
+        select(CashSession)
+        .where(
+            CashSession.tenant_id == user.tenant_id,
+            CashSession.user_id == user.id,
+            CashSession.closed_at.is_(None),
+        )
+        .order_by(CashSession.opened_at.desc())
+        .limit(1)
+    )
+
+
+def _cash_current_payload(db: Session, session: CashSession) -> dict:
+    return {
+        "id": session.id,
+        "branch_id": session.branch_id,
+        "opening_amount": str(session.opening_amount),
+        "expected_amount": str(_cash_expected(db, session)),
+        "opened_at": session.opened_at,
+    }
+
+
 @router.post("/bootstrap", response_model=TokenOut)
 def bootstrap(payload: BootstrapIn, db: Session = Depends(get_db)) -> TokenOut:
     if db.scalar(select(func.count(User.id))) != 0:
@@ -192,12 +215,21 @@ def create_sale(payload: SaleIn, idempotency_key: Annotated[str, Header(alias="I
     return {"id": sale.id, "status": sale.status.value, "subtotal": str(sale.subtotal), "total": str(sale.total), "payment_method": sale.payment_method}
 
 
+@router.get("/cash/current")
+def current_cash(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)),
+) -> dict | None:
+    session = _current_cash_for_user(db, user)
+    return _cash_current_payload(db, session) if session else None
+
+
 @router.post("/cash/open", status_code=201)
 def open_cash(payload: CashOpenIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER))) -> dict:
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
-    active = db.scalar(select(CashSession).where(CashSession.tenant_id == user.tenant_id, CashSession.user_id == user.id, CashSession.closed_at.is_(None)))
+    active = _current_cash_for_user(db, user)
     if active:
         raise HTTPException(status_code=409, detail="Ya existe una caja abierta para este usuario")
     session = CashSession(tenant_id=user.tenant_id, branch_id=branch_id, user_id=user.id, opening_amount=payload.opening_amount)
@@ -205,7 +237,8 @@ def open_cash(payload: CashOpenIn, db: Session = Depends(get_db), user: User = D
     db.flush()
     AuditService.record(db, user, "cash.opened", "cash_session", session.id, {"opening": str(payload.opening_amount)})
     db.commit()
-    return {"id": session.id, "opening_amount": str(session.opening_amount), "opened_at": session.opened_at}
+    db.refresh(session)
+    return _cash_current_payload(db, session)
 
 
 @router.get("/cash/{session_id}/summary")
