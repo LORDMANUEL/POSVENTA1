@@ -116,6 +116,8 @@ jobs:
           assert 'request_hash' in {c['name'] for c in inspector.get_columns('sales')}
           assert 'request_hash' in {c['name'] for c in inspector.get_columns('orders')}
           assert 'request_hash' in {c['name'] for c in inspector.get_columns('return_records')}
+          assert 'unit_cost' in {c['name'] for c in inspector.get_columns('sale_lines')}
+          assert 'unit_cost' in {c['name'] for c in inspector.get_columns('order_lines')}
           assert 'uq_cash_open_user' in {i['name'] for i in inspector.get_indexes('cash_sessions')}
           assert 'uq_bank_match_target' in {i['name'] for i in inspector.get_indexes('bank_transactions')}
           PY
@@ -165,12 +167,15 @@ jobs:
           pip install -e '.[dev]'
           alembic upgrade head
           alembic current | grep 20260818_0009
-      - name: Seed a real v0.12.0 tenant and owner
+      - name: Seed real v0.12.0 tenant, owner and economic rows
         working-directory: previous/backend
         run: |
           python - <<'PY'
+          from decimal import Decimal
+          from app.commerce_models import Order, OrderLine, OrderStatus
           from app.db import SessionLocal
-          from app.models import Branch, Tenant, User, UserRole
+          from app.models import Branch, Product, Sale, SaleLine, Tenant, User, UserRole
+          from app.ops_models import Customer
           from app.security import hash_password
           with SessionLocal() as db:
               tenant = Tenant(name='Upgrade Existing Store', slug='upgrade-existing-store')
@@ -185,8 +190,56 @@ jobs:
                   password_hash=hash_password('UpgradeOwner-2026!'),
                   role=UserRole.OWNER,
               )
-              db.add(owner); db.commit()
-              print(owner.id)
+              db.add(owner); db.flush()
+              product = Product(
+                  tenant_id=tenant.id,
+                  sku='UPGRADE-COST-001',
+                  name='Legacy cost product',
+                  unit_cost=Decimal('42.50'),
+                  sale_price=Decimal('100.00'),
+              )
+              db.add(product); db.flush()
+              sale = Sale(
+                  tenant_id=tenant.id,
+                  branch_id=branch.id,
+                  cashier_user_id=owner.id,
+                  idempotency_key='legacy-sale',
+                  subtotal=Decimal('100.00'),
+                  discount_total=Decimal('0'),
+                  tax_total=Decimal('0'),
+                  total=Decimal('100.00'),
+                  payment_method='cash',
+              )
+              db.add(sale); db.flush()
+              db.add(SaleLine(
+                  sale_id=sale.id,
+                  product_id=product.id,
+                  quantity=Decimal('1'),
+                  unit_price=Decimal('100.00'),
+                  line_total=Decimal('100.00'),
+              ))
+              customer = Customer(tenant_id=tenant.id, full_name='Legacy customer')
+              db.add(customer); db.flush()
+              order = Order(
+                  tenant_id=tenant.id,
+                  branch_id=branch.id,
+                  customer_id=customer.id,
+                  idempotency_key='legacy-order',
+                  tracking_token_hash='legacy-tracking-hash',
+                  status=OrderStatus.PENDING_PAYMENT,
+                  subtotal=Decimal('100.00'),
+                  total=Decimal('100.00'),
+                  fulfillment_method='pickup',
+              )
+              db.add(order); db.flush()
+              db.add(OrderLine(
+                  order_id=order.id,
+                  product_id=product.id,
+                  quantity=Decimal('1'),
+                  unit_price=Decimal('100.00'),
+                  line_total=Decimal('100.00'),
+              ))
+              db.commit()
           PY
       - name: Upgrade the same database with candidate
         working-directory: candidate/backend
@@ -199,6 +252,7 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          from decimal import Decimal
           from sqlalchemy import create_engine, inspect, text
           engine = create_engine(os.environ['DATABASE_URL'])
           i = inspect(engine)
@@ -212,6 +266,8 @@ jobs:
               assert 'version' in {c['name'] for c in i.get_columns(table)}, table
           for table in ('sales', 'orders', 'return_records'):
               assert 'request_hash' in {c['name'] for c in i.get_columns(table)}, table
+          for table in ('sale_lines', 'order_lines'):
+              assert 'unit_cost' in {c['name'] for c in i.get_columns(table)}, table
           for table in ('receivable_payments', 'payable_payments'):
               columns = {c['name'] for c in i.get_columns(table)}
               assert {'idempotency_key', 'request_hash'} <= columns, (table, columns)
@@ -225,6 +281,14 @@ jobs:
                   "SELECT user_id FROM platform_operators WHERE user_id=:owner_id"
               ), {'owner_id': owner_id}).scalar_one()
               assert operator_id == owner_id
+              sale_cost = conn.execute(text(
+                  "SELECT unit_cost FROM sale_lines LIMIT 1"
+              )).scalar_one()
+              order_cost = conn.execute(text(
+                  "SELECT unit_cost FROM order_lines LIMIT 1"
+              )).scalar_one()
+              assert Decimal(sale_cost) == Decimal('42.50')
+              assert Decimal(order_cost) == Decimal('42.50')
           PY
 
   installer_e2e:
