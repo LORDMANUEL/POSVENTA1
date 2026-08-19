@@ -26,7 +26,7 @@ MODULES: Final[dict[str, ModuleDefinition]] = {
     "inventory": ModuleDefinition("inventory", "Inventario", "commerce", ("catalog", "branches"), True),
     "purchasing": ModuleDefinition("purchasing", "Compras y proveedores", "commerce", ("inventory",)),
     "pos": ModuleDefinition("pos", "POS y caja", "sales", ("inventory", "identity"), True),
-    "orders": ModuleDefinition("orders", "Pedidos y checkout", "sales", ("inventory",)),
+    "orders": ModuleDefinition("orders", "Pedidos y checkout", "sales", ("inventory",), True),
     "payments": ModuleDefinition("payments", "Pagos y conciliación", "finance", ("orders", "pos")),
     "delivery": ModuleDefinition("delivery", "Entregas y driver", "sales", ("orders",)),
     "returns": ModuleDefinition("returns", "Devoluciones y reembolsos", "sales", ("pos", "inventory")),
