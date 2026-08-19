@@ -69,9 +69,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Install frontend
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend reproducibly
         working-directory: frontend
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Test frontend logic
         working-directory: frontend
         run: npm run test:logic
