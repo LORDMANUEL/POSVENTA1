@@ -56,12 +56,19 @@ export class ApiClient {
     return body;
   }
 
-  bootstrap(data) {
-    return this.request('/bootstrap', { method: 'POST', body: JSON.stringify(data) });
+  bootstrap(data, installationCode = '') {
+    const supplied = String(installationCode || window.prompt('Ingrese el código de primera instalación mostrado por install.sh:') || '').trim();
+    if (!supplied) throw new ApiError('Se requiere el código de primera instalación', 403);
+    return this.request('/bootstrap', {
+      method: 'POST',
+      headers: { 'X-Bootstrap-Token': supplied },
+      body: JSON.stringify(data),
+    });
   }
 
-  async login(email, password) {
-    const form = new URLSearchParams({ username: email, password });
+  async login(email, password, tenantSlug = '') {
+    const username = tenantSlug ? `${tenantSlug}:${email}` : email;
+    const form = new URLSearchParams({ username, password });
     let response;
     try {
       response = await fetch(`${API_URL}/auth/login`, {
@@ -75,6 +82,10 @@ export class ApiClient {
       throw new ApiError('Sin conexión con el servidor', 0, null, true, { cause: error });
     }
     const body = await response.json();
+    if (response.status === 409 && !tenantSlug && String(body?.detail || '').includes('varias tiendas')) {
+      const selected = String(window.prompt('Este correo pertenece a varias tiendas. Ingrese el identificador de su tienda:') || '').trim();
+      if (selected) return this.login(email, password, selected);
+    }
     if (!response.ok) throw new ApiError(body.detail || 'No se pudo iniciar sesión', response.status, body);
     this.setToken(body.access_token);
     return body;
