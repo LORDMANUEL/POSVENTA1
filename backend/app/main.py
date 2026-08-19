@@ -10,6 +10,7 @@ from .admin_api import admin_router, device_router
 from .analytics_api import analytics_router
 from .api import router
 from .automation_api import integration_router, workflow_router
+from .bank_reconciliation_api import reconciliation_router
 from .commerce_api import commerce_router, store_router
 from .config import get_settings
 from .content_api import ads_router, cms_router, marketing_router
@@ -41,7 +42,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Mily Zebra Commerce OS API",
-    version="0.11.1",
+    version="0.11.2",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -73,6 +74,7 @@ app.include_router(accounting_router, dependencies=[Depends(require_enabled_modu
 app.include_router(receivables_router)
 app.include_router(payables_router)
 app.include_router(banking_router)
+app.include_router(reconciliation_router)
 app.include_router(fiscal_router)
 app.include_router(crm_router)
 app.include_router(loyalty_router)
