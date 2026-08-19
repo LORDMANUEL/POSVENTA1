@@ -66,9 +66,9 @@ def test_media_zip_preview_commit_and_storefront_primary(client, owner_headers) 
     assert primary["width"] == 900
     assert primary["height"] == 1200
 
-    storefront = client.get("/store/products")
+    storefront = client.get("/store/mily-zebra/catalog")
     assert storefront.status_code == 200
-    row = next(item for item in storefront.json() if item["id"] == product_id)
+    row = next(item for item in storefront.json()["products"] if item["id"] == product_id)
     assert row["primary_image_url"] == primary["url"]
 
 
