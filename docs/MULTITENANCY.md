@@ -21,10 +21,11 @@ La primera instalación crea la primera empresa con `/bootstrap`, protegido por 
    - correo y nombre del propietario;
    - contraseña inicial.
 4. El servidor crea tenant, sucursal y owner en una sola transacción.
-5. La interfaz devuelve la ruta de acceso, por ejemplo:
+5. La plataforma expone dos rutas para ese tenant:
 
 ```text
-/admin?tenant=mily-zebra-sps
+Administración: /admin?tenant=mily-zebra-sps
+Storefront:     /?store=mily-zebra-sps
 ```
 
 La misma PWA y `MilyZebra.exe` sirven a todas las empresas; no se duplica lógica ni base de datos.
@@ -38,6 +39,22 @@ Cuando la URL incluye `?tenant=<slug>`, la PWA autentica como:
 ```
 
 Esto permite que un mismo correo exista en dos empresas sin elegir un usuario de otro tenant por accidente. Si un correo ambiguo se usa sin slug, el backend exige seleccionar la tienda en vez de resolver arbitrariamente una cuenta.
+
+Cambiar a una URL administrativa de otro tenant invalida la sesión local previa antes de mostrar el login. El JWT sigue siendo validado por el servidor; el `tenant_id` leído en navegador se utiliza únicamente para separar almacenamiento local.
+
+## Storefront
+
+El storefront resuelve el tenant con `?store=<slug>` y consulta únicamente:
+
+```text
+GET  /store/<slug>/catalog
+POST /store/<slug>/checkout
+GET  /store/<slug>/orders/<id>/track
+```
+
+El carrito se guarda con una clave ligada al slug de tienda y los tokens de tracking también se almacenan por tienda. Un carrito de tenant A no aparece al abrir el storefront del tenant B.
+
+La ruta sin `?store=` conserva compatibilidad y usa `mily-zebra` como tienda predeterminada.
 
 ## API de plataforma
 
@@ -63,9 +80,25 @@ Una credencial de tenant B no puede usar identificadores conocidos de tenant A p
 
 Los endpoints que aceptan `branch_id` validan que la sucursal pertenezca al tenant autenticado. Los JWT incluyen `tenant_id` y el backend comprueba que coincida con el usuario persistido.
 
+## Estado local y modo offline
+
+El perfil persistente de WebView2/Chromium se comparte entre sesiones de la misma aplicación, por lo que el aislamiento local también es obligatorio:
+
+- token: conserva `tenant_id` y slug de contexto;
+- snapshots `/me`, catálogo, inventario y caja: clave `tenant_id`;
+- cola de ventas offline: IndexedDB con clave compuesta `tenant_id + Idempotency-Key`;
+- clave AES-GCM de la cola: separada por tenant;
+- sincronización: lock independiente por tenant;
+- carrito público: clave ligada al slug del storefront;
+- tracking público: clave ligada al slug y pedido.
+
+La actualización migra la antigua cola global al tenant original, porque las versiones anteriores no tenían multitenancy operativo. Una vez migrada, ninguna operación offline se lee o sincroniza desde otro tenant.
+
 ## Actualización desde v0.12.0
 
-La migración `20260819_0010` crea `platform_operators` cuando no existe. Si la base anterior ya contiene usuarios, promueve al usuario más antiguo de la instalación original como operador de plataforma. Stable Gate construye una base real con `main`, crea un owner, ejecuta la migración de la candidata y comprueba que ese owner conserva la administración de plataforma.
+La migración `20260819_0010` crea `platform_operators` cuando no existe. Si la base anterior ya contiene usuarios, promueve al usuario más antiguo de la instalación original como operador de plataforma. Stable Gate construye una base real con `main`, crea un owner y filas económicas heredadas, ejecuta la migración de la candidata y comprueba que ese owner conserva la administración de plataforma.
+
+La misma migración agrega snapshots de costo a líneas POS/ecommerce. Las filas históricas de `v0.12.0` se rellenan con el costo del producto disponible al momento de actualizar, que es la mejor evidencia existente porque la versión anterior no conservaba ese dato. A partir de `v0.12.1`, cada nueva línea guarda el costo exacto del momento comercial.
 
 ## Recuperación
 
