@@ -1,3 +1,8 @@
+def enable_module(client, headers, key: str) -> None:
+    response = client.put(f"/admin/modules/{key}?enabled=true", headers=headers)
+    assert response.status_code == 200, response.text
+
+
 def create_product(client, headers, sku="MZ-OPS-001"):
     response = client.post(
         "/products",
@@ -14,7 +19,13 @@ def create_product(client, headers, sku="MZ-OPS-001"):
     return response.json()["id"]
 
 
+def test_optional_ops_are_fail_closed(client, owner_headers) -> None:
+    assert client.get("/ops/suppliers", headers=owner_headers).status_code == 403
+    assert client.get("/ops/deliveries", headers=owner_headers).status_code == 403
+
+
 def test_purchase_receipt_and_transfer_between_branches(client, owner_headers) -> None:
+    enable_module(client, owner_headers, "purchasing")
     branches = client.get("/admin/branches", headers=owner_headers).json()
     origin_id = branches[0]["id"]
 
@@ -69,6 +80,7 @@ def test_purchase_receipt_and_transfer_between_branches(client, owner_headers) -
 
 
 def test_driver_only_updates_assigned_delivery(client, owner_headers) -> None:
+    enable_module(client, owner_headers, "delivery")
     branch_id = client.get("/admin/branches", headers=owner_headers).json()[0]["id"]
     driver = client.post(
         "/ops/users",
