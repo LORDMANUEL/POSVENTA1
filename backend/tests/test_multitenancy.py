@@ -27,6 +27,7 @@ def test_platform_admin_can_create_second_tenant_and_login_by_slug(client, owner
     assert second['tenant']['slug'] == 'mily-zebra-sps'
     assert second['owner']['platform_admin'] is False
     assert second['admin_login_path'] == '/admin?tenant=mily-zebra-sps'
+    assert second['storefront_path'] == '/?store=mily-zebra-sps'
 
     ambiguous = client.post(
         '/auth/login',
@@ -90,6 +91,11 @@ def test_platform_admin_can_create_second_tenant_and_login_by_slug(client, owner
     )
     assert cross_tenant_branch.status_code == 404
 
+    catalog = client.get('/store/mily-zebra-sps/catalog')
+    assert catalog.status_code == 200
+    assert catalog.json()['store']['name'] == 'Mily Zebra SPS'
+    assert product.json()['id'] in {row['id'] for row in catalog.json()['products']}
+
 
 def test_platform_admin_lists_tenants_without_exposing_owner_secrets(client, owner_headers) -> None:
     response = client.get('/platform/tenants', headers=owner_headers)
@@ -97,5 +103,7 @@ def test_platform_admin_lists_tenants_without_exposing_owner_secrets(client, own
     assert len(response.json()) == 1
     row = response.json()[0]
     assert row['slug'] == 'mily-zebra'
+    assert row['admin_login_path'] == '/admin?tenant=mily-zebra'
+    assert row['storefront_path'] == '/?store=mily-zebra'
     assert 'password_hash' not in row
     assert 'bootstrap_token' not in row
