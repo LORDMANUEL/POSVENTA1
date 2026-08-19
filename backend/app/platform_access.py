@@ -15,15 +15,16 @@ def is_platform_admin(db: Session, user: User) -> bool:
     if explicit:
         return True
 
-    # Compatibility for a fresh installation: before any platform-operator row
-    # exists, only the oldest active owner can bootstrap platform administration.
-    # Once a second tenant is provisioned, the explicit row becomes authoritative.
+    # Fresh-install compatibility only. Before the first explicit platform
+    # operator is persisted, authority belongs to the first owner ever created,
+    # not to the oldest *active* owner. Deactivating that account must not
+    # silently transfer global platform privileges to another tenant owner.
     operator_count = db.scalar(select(func.count(PlatformOperator.id))) or 0
     if int(operator_count) > 0:
         return False
     first_owner_id = db.scalar(
         select(User.id)
-        .where(User.role == UserRole.OWNER, User.active.is_(True))
+        .where(User.role == UserRole.OWNER)
         .order_by(User.created_at, User.id)
         .limit(1)
     )
