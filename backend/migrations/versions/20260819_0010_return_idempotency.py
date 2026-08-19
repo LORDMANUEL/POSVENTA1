@@ -1,15 +1,18 @@
-"""Harden v0.12.1 transactional integrity safely.
+"""Harden v0.12.1 transactional integrity and platform tenancy safely.
 
 Revision ID: 20260819_0010
 Revises: 20260818_0009
 Create Date: 2026-08-19
 
 The historical baseline migration used ``Base.metadata.create_all()``. A fresh
-install therefore sees the current model and may already contain columns and
-indexes introduced by this unreleased candidate, while a real v0.12.0 database
-at revision 0009 does not. This migration deliberately introspects every change
-so clean installs and upgrades converge on the same schema.
+install therefore sees the current model and may already contain columns,
+indexes and platform tables introduced by this unreleased candidate, while a
+real v0.12.0 database at revision 0009 does not. This migration deliberately
+introspects every change so clean installs and upgrades converge on the same
+schema.
 """
+
+import uuid
 
 import sqlalchemy as sa
 from alembic import op
@@ -32,6 +35,10 @@ VERSIONED_TABLES = (
     "payables",
     "bank_transactions",
 )
+
+
+def _table_names(bind) -> set[str]:
+    return set(sa.inspect(bind).get_table_names())
 
 
 def _column_names(bind, table: str) -> set[str]:
@@ -67,6 +74,46 @@ def _add_version(bind, table: str) -> None:
         sa.Column("version", sa.Integer(), nullable=False, server_default=sa.text("1")),
     )
     op.alter_column(table, "version", server_default=None)
+
+
+def _ensure_platform_operators(bind) -> None:
+    if "platform_operators" not in _table_names(bind):
+        op.create_table(
+            "platform_operators",
+            sa.Column("id", sa.String(length=36), primary_key=True),
+            sa.Column(
+                "user_id",
+                sa.String(length=36),
+                sa.ForeignKey("users.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+            ),
+            sa.UniqueConstraint("user_id", name="uq_platform_operator_user"),
+        )
+
+    # Existing v0.12.0 deployments have exactly the original tenant bootstrap
+    # lineage. Promote the oldest existing user as the platform operator so the
+    # upgrade can provision additional tenants without a database-side manual fix.
+    count = bind.execute(sa.text("SELECT COUNT(*) FROM platform_operators")).scalar_one()
+    if int(count or 0) == 0:
+        first_user = bind.execute(
+            sa.text("SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1")
+        ).first()
+        if first_user:
+            bind.execute(
+                sa.text(
+                    """
+                    INSERT INTO platform_operators (id, user_id, created_at)
+                    VALUES (:id, :user_id, CURRENT_TIMESTAMP)
+                    """
+                ),
+                {"id": str(uuid.uuid4()), "user_id": first_user[0]},
+            )
 
 
 def _assert_no_duplicate_open_cash(bind) -> None:
@@ -111,6 +158,8 @@ def _assert_no_duplicate_bank_matches(bind) -> None:
 
 def upgrade() -> None:
     bind = op.get_bind()
+
+    _ensure_platform_operators(bind)
 
     # Payload fingerprints make idempotency semantic: the same key may replay
     # the same request, but may never silently represent different contents.
@@ -198,3 +247,6 @@ def downgrade() -> None:
     ):
         if column in _column_names(bind, table):
             op.drop_column(table, column)
+
+    if "platform_operators" in _table_names(bind):
+        op.drop_table("platform_operators")
