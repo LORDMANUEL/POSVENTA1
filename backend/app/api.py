@@ -17,6 +17,10 @@ from .services import AuditService, InventoryService, SalesService, money
 router = APIRouter()
 
 
+def quantity_text(value: Decimal) -> str:
+    return format(Decimal(value).quantize(Decimal("0.001")), ".3f")
+
+
 class BootstrapIn(BaseModel):
     store_name: str = Field(min_length=2, max_length=160)
     branch_name: str = Field(default="Roatán", min_length=2, max_length=120)
@@ -140,14 +144,7 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: Session = D
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user)) -> dict:
-    return {
-        "id": user.id,
-        "tenant_id": user.tenant_id,
-        "branch_id": user.branch_id,
-        "email": user.email,
-        "full_name": user.full_name,
-        "role": user.role.value,
-    }
+    return {"id": user.id, "tenant_id": user.tenant_id, "branch_id": user.branch_id, "email": user.email, "full_name": user.full_name, "role": user.role.value}
 
 
 @router.get("/products", response_model=list[ProductOut])
@@ -156,11 +153,7 @@ def list_products(db: Session = Depends(get_db), user: User = Depends(get_curren
 
 
 @router.post("/products", response_model=ProductOut, status_code=201)
-def create_product(
-    payload: ProductIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
-) -> Product:
+def create_product(payload: ProductIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE))) -> Product:
     existing = db.scalar(select(Product).where(Product.tenant_id == user.tenant_id, Product.sku == payload.sku))
     if existing:
         raise HTTPException(status_code=409, detail="SKU ya registrado")
@@ -175,97 +168,39 @@ def create_product(
 
 @router.get("/inventory")
 def inventory(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
-    rows = db.execute(
-        select(StockBalance, Product)
-        .join(Product, Product.id == StockBalance.product_id)
-        .where(StockBalance.tenant_id == user.tenant_id)
-        .order_by(Product.name)
-    ).all()
-    return [
-        {
-            "product_id": product.id,
-            "sku": product.sku,
-            "name": product.name,
-            "branch_id": balance.branch_id,
-            "quantity": str(balance.quantity),
-        }
-        for balance, product in rows
-    ]
+    rows = db.execute(select(StockBalance, Product).join(Product, Product.id == StockBalance.product_id).where(StockBalance.tenant_id == user.tenant_id).order_by(Product.name)).all()
+    return [{"product_id": product.id, "sku": product.sku, "name": product.name, "branch_id": balance.branch_id, "quantity": quantity_text(balance.quantity)} for balance, product in rows]
 
 
 @router.post("/inventory/movements")
-def move_inventory(
-    payload: InventoryMoveIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE)),
-) -> dict:
+def move_inventory(payload: InventoryMoveIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.WAREHOUSE))) -> dict:
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
     balance = InventoryService.move(db, user, branch_id, payload.product_id, payload.quantity_delta, payload.reason)
-    AuditService.record(
-        db,
-        user,
-        "inventory.moved",
-        "product",
-        payload.product_id,
-        {"delta": str(payload.quantity_delta), "reason": payload.reason},
-    )
+    AuditService.record(db, user, "inventory.moved", "product", payload.product_id, {"delta": quantity_text(payload.quantity_delta), "reason": payload.reason})
     db.commit()
-    return {"product_id": payload.product_id, "branch_id": branch_id, "quantity": str(balance.quantity)}
+    return {"product_id": payload.product_id, "branch_id": branch_id, "quantity": quantity_text(balance.quantity)}
 
 
 @router.post("/sales", status_code=201)
-def create_sale(
-    payload: SaleIn,
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=100)],
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.SALES)),
-) -> dict:
+def create_sale(payload: SaleIn, idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=100)], db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.SALES))) -> dict:
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
-    sale = SalesService.create_sale(
-        db,
-        user,
-        branch_id,
-        idempotency_key,
-        payload.payment_method,
-        [line.model_dump() for line in payload.lines],
-    )
-    return {
-        "id": sale.id,
-        "status": sale.status.value,
-        "subtotal": str(sale.subtotal),
-        "total": str(sale.total),
-        "payment_method": sale.payment_method,
-    }
+    sale = SalesService.create_sale(db, user, branch_id, idempotency_key, payload.payment_method, [line.model_dump() for line in payload.lines])
+    return {"id": sale.id, "status": sale.status.value, "subtotal": str(sale.subtotal), "total": str(sale.total), "payment_method": sale.payment_method}
 
 
 @router.post("/cash/open", status_code=201)
-def open_cash(
-    payload: CashOpenIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)),
-) -> dict:
+def open_cash(payload: CashOpenIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER))) -> dict:
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
-    active = db.scalar(
-        select(CashSession).where(
-            CashSession.tenant_id == user.tenant_id,
-            CashSession.user_id == user.id,
-            CashSession.closed_at.is_(None),
-        )
-    )
+    active = db.scalar(select(CashSession).where(CashSession.tenant_id == user.tenant_id, CashSession.user_id == user.id, CashSession.closed_at.is_(None)))
     if active:
         raise HTTPException(status_code=409, detail="Ya existe una caja abierta para este usuario")
-    session = CashSession(
-        tenant_id=user.tenant_id,
-        branch_id=branch_id,
-        user_id=user.id,
-        opening_amount=payload.opening_amount,
-    )
+    session = CashSession(tenant_id=user.tenant_id, branch_id=branch_id, user_id=user.id, opening_amount=payload.opening_amount)
     db.add(session)
     db.flush()
     AuditService.record(db, user, "cash.opened", "cash_session", session.id, {"opening": str(payload.opening_amount)})
@@ -274,79 +209,29 @@ def open_cash(
 
 
 @router.get("/cash/{session_id}/summary")
-def cash_summary(
-    session_id: str,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.AUDITOR)),
-) -> dict:
+def cash_summary(session_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.AUDITOR))) -> dict:
     session = _cash_session_for_user(db, session_id, user)
-    movements = db.scalars(
-        select(CashMovement).where(CashMovement.cash_session_id == session.id).order_by(CashMovement.created_at)
-    ).all()
+    movements = db.scalars(select(CashMovement).where(CashMovement.cash_session_id == session.id).order_by(CashMovement.created_at)).all()
     expected = _cash_expected(db, session)
-    return {
-        "id": session.id,
-        "opening_amount": str(session.opening_amount),
-        "expected_amount": str(expected),
-        "closing_amount": str(session.closing_amount) if session.closing_amount is not None else None,
-        "difference": str(money(Decimal(session.closing_amount) - expected)) if session.closing_amount is not None else None,
-        "closed_at": session.closed_at,
-        "movements": [
-            {
-                "id": movement.id,
-                "type": movement.movement_type,
-                "amount": str(movement.amount),
-                "reason": movement.reason,
-                "reference_type": movement.reference_type,
-                "reference_id": movement.reference_id,
-                "created_at": movement.created_at,
-            }
-            for movement in movements
-        ],
-    }
+    return {"id": session.id, "opening_amount": str(session.opening_amount), "expected_amount": str(expected), "closing_amount": str(session.closing_amount) if session.closing_amount is not None else None, "difference": str(money(Decimal(session.closing_amount) - expected)) if session.closing_amount is not None else None, "closed_at": session.closed_at, "movements": [{"id": movement.id, "type": movement.movement_type, "amount": str(movement.amount), "reason": movement.reason, "reference_type": movement.reference_type, "reference_id": movement.reference_id, "created_at": movement.created_at} for movement in movements]}
 
 
 @router.post("/cash/{session_id}/movements", status_code=201)
-def create_cash_movement(
-    session_id: str,
-    payload: CashMovementIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
-) -> dict:
+def create_cash_movement(session_id: str, payload: CashMovementIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
     session = _cash_session_for_user(db, session_id, user)
     if session.closed_at is not None:
         raise HTTPException(status_code=409, detail="La caja ya está cerrada")
     signed_amount = money(payload.amount if payload.movement_type == "cash_in" else -payload.amount)
-    movement = CashMovement(
-        tenant_id=user.tenant_id,
-        branch_id=session.branch_id,
-        cash_session_id=session.id,
-        actor_user_id=user.id,
-        movement_type=payload.movement_type,
-        amount=signed_amount,
-        reason=payload.reason,
-    )
+    movement = CashMovement(tenant_id=user.tenant_id, branch_id=session.branch_id, cash_session_id=session.id, actor_user_id=user.id, movement_type=payload.movement_type, amount=signed_amount, reason=payload.reason)
     db.add(movement)
     db.flush()
-    AuditService.record(
-        db,
-        user,
-        "cash.movement_created",
-        "cash_movement",
-        movement.id,
-        {"type": movement.movement_type, "amount": str(movement.amount), "session_id": session.id},
-    )
+    AuditService.record(db, user, "cash.movement_created", "cash_movement", movement.id, {"type": movement.movement_type, "amount": str(movement.amount), "session_id": session.id})
     db.commit()
     return {"id": movement.id, "type": movement.movement_type, "amount": str(movement.amount)}
 
 
 @router.post("/cash/{session_id}/close")
-def close_cash(
-    session_id: str,
-    payload: CashCloseIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)),
-) -> dict:
+def close_cash(session_id: str, payload: CashCloseIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER))) -> dict:
     session = _cash_session_for_user(db, session_id, user)
     if session.closed_at is not None:
         raise HTTPException(status_code=409, detail="La caja ya está cerrada")
@@ -355,40 +240,17 @@ def close_cash(
     session.closing_amount = money(payload.closing_amount)
     session.closed_at = datetime.now(timezone.utc)
     difference = money(Decimal(session.closing_amount) - expected)
-    AuditService.record(
-        db,
-        user,
-        "cash.closed",
-        "cash_session",
-        session.id,
-        {"expected": str(expected), "counted": str(session.closing_amount), "difference": str(difference)},
-    )
+    AuditService.record(db, user, "cash.closed", "cash_session", session.id, {"expected": str(expected), "counted": str(session.closing_amount), "difference": str(difference)})
     db.commit()
-    return {
-        "id": session.id,
-        "expected_amount": str(expected),
-        "closing_amount": str(session.closing_amount),
-        "difference": str(difference),
-        "closed_at": session.closed_at,
-    }
+    return {"id": session.id, "expected_amount": str(expected), "closing_amount": str(session.closing_amount), "difference": str(difference), "closed_at": session.closed_at}
 
 
 @router.post("/print-jobs", status_code=201)
-def create_print_job(
-    payload: PrintJobIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.WAREHOUSE)),
-) -> dict:
+def create_print_job(payload: PrintJobIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.WAREHOUSE))) -> dict:
     branch_id = payload.branch_id or user.branch_id
     if not branch_id:
         raise HTTPException(status_code=422, detail="Debe indicar una sucursal")
-    job = PrintJob(
-        tenant_id=user.tenant_id,
-        branch_id=branch_id,
-        device_id=payload.device_id,
-        job_type=payload.job_type,
-        payload=payload.payload,
-    )
+    job = PrintJob(tenant_id=user.tenant_id, branch_id=branch_id, device_id=payload.device_id, job_type=payload.job_type, payload=payload.payload)
     db.add(job)
     db.flush()
     AuditService.record(db, user, "print.queued", "print_job", job.id, {"type": job.job_type})
