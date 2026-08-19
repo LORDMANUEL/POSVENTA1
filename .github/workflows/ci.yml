@@ -27,6 +27,40 @@ jobs:
         working-directory: backend
         run: pytest -q
 
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: milyzebra_ci
+          POSTGRES_USER: milyzebra
+          POSTGRES_PASSWORD: ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U milyzebra -d milyzebra_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DATABASE_URL: postgresql+psycopg://milyzebra:ci-password@127.0.0.1:5432/milyzebra_ci
+      AUTO_CREATE_SCHEMA: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install backend
+        working-directory: backend
+        run: pip install -e '.[dev]'
+      - name: Upgrade schema
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Verify migration state
+        working-directory: backend
+        run: alembic current | grep 20260818_0001
+
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -58,4 +92,4 @@ jobs:
         with:
           python-version: '3.13'
       - name: Compile Python
-        run: python -m compileall -q backend/app backend/tests agent desktop
+        run: python -m compileall -q backend/app backend/tests backend/migrations agent desktop
