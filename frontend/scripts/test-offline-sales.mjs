@@ -6,7 +6,8 @@ globalThis.localStorage = {
   setItem: (key, value) => storage.set(key, String(value)),
   removeItem: (key) => storage.delete(key),
 };
-globalThis.CustomEvent = class CustomEvent { constructor(type) { this.type = type; } };
+globalThis.localStorage.setItem('mz_tenant_id', 'tenant-a');
+globalThis.CustomEvent = class CustomEvent { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } };
 globalThis.window = { dispatchEvent: () => {} };
 Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, configurable: true });
 
@@ -71,9 +72,29 @@ for (let i = 0; i < 250; i += 1) {
     payload: { payment_method: 'cash', lines: [{ product_id: `p-${i}`, quantity: 1 }] },
   });
 }
-const durable = await getOfflineSales();
-assert.equal(durable.length, 250);
-assert.equal(durable[0].idempotencyKey, 'capacity-0000');
-assert.equal(durable.at(-1).idempotencyKey, 'capacity-0249');
+const durableTenantA = await getOfflineSales();
+assert.equal(durableTenantA.length, 250);
+assert.equal(durableTenantA[0].idempotencyKey, 'capacity-0000');
+assert.equal(durableTenantA.at(-1).idempotencyKey, 'capacity-0249');
 
-console.log('offline POS durable logic: OK');
+// The same persistent browser/WebView2 profile can serve another tenant. Its
+// queue must start empty and must never expose or synchronize tenant A rows.
+globalThis.localStorage.setItem('mz_tenant_id', 'tenant-b');
+assert.equal((await getOfflineSales()).length, 0);
+await queueOfflineSale({
+  idempotencyKey: 'tenant-b-sale-0001',
+  total: 99,
+  payload: { payment_method: 'cash', lines: [{ product_id: 'tenant-b-product', quantity: 1 }] },
+});
+const tenantB = await getOfflineSales();
+assert.equal(tenantB.length, 1);
+assert.equal(tenantB[0].idempotencyKey, 'tenant-b-sale-0001');
+assert.equal(tenantB[0].tenantScope, 'tenant-b');
+
+globalThis.localStorage.setItem('mz_tenant_id', 'tenant-a');
+assert.equal((await getOfflineSales()).length, 250);
+
+globalThis.localStorage.setItem('mz_tenant_id', 'tenant-b');
+assert.equal((await getOfflineSales()).length, 1);
+
+console.log('offline POS durable + tenant isolation logic: OK');
