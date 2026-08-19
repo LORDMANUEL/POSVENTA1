@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: stable-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
-  # A release-candidate SHA must finish. Fast CI can cancel obsolete commits;
-  # the stable proof must never disappear halfway through certification.
+  group: stable-${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  # Every release-candidate SHA owns an independent proof. It neither cancels
+  # nor waits behind an obsolete SHA from the same stabilization branch.
   cancel-in-progress: false
 
 jobs:
