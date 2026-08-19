@@ -16,6 +16,7 @@ from app import (  # noqa: F401,E402
     content_models,
     crm_models,
     finance_models,
+    inventory_advanced_models,
     media_models,
     models,
     module_registry,
