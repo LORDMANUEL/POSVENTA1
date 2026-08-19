@@ -131,6 +131,27 @@ printf '%s' "$BANK_TX" | grep -q '"reconciliation_status":"unmatched"'
 DUP_CODE=$(curl -sS -o /tmp/mz-bank-dup.json -w '%{http_code}' -X POST "$API/finance/banking/accounts/$BANK_ID/transactions" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{"transaction_date":"2026-08-18","description":"Duplicado","amount":"200.00","external_reference":"MOV-E2E-001"}')
 [[ "$DUP_CODE" == '409' ]]
 
+# Postventa real: lookup de línea retornable, reembolso cash, ledger e idempotencia.
+RETURN_CASH=$(request POST "$API/cash/open" '{"opening_amount":"500.00"}' "$TOKEN")
+RETURN_CASH_ID=$(printf '%s' "$RETURN_CASH" | json_get id)
+RECENT_SALES=$(request GET "$API/post-sales/sales?limit=100" '' "$TOKEN")
+RETURN_SALE_ID=$(python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); sale=next(r for r in rows if r["payment_method"]=="cash" and r["total"]=="249.00"); print(sale["id"])' "$RECENT_SALES")
+RETURN_DETAIL=$(request GET "$API/post-sales/sales/$RETURN_SALE_ID" '' "$TOKEN")
+RETURN_LINE_ID=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["lines"][0]["sale_line_id"])' "$RETURN_DETAIL")
+RETURN_PRODUCT_ID=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["lines"][0]["product_id"])' "$RETURN_DETAIL")
+RETURN_BODY="{\"sale_id\":\"$RETURN_SALE_ID\",\"reason\":\"Stable Gate devolución\",\"lines\":[{\"sale_line_id\":\"$RETURN_LINE_ID\",\"quantity\":\"1\"}]}"
+RETURN1=$(request POST "$API/post-sales/returns" "$RETURN_BODY" "$TOKEN" 'stable-return-0001')
+RETURN_ID=$(printf '%s' "$RETURN1" | json_get id)
+printf '%s' "$RETURN1" | grep -q '"total":"249.00"'
+printf '%s' "$RETURN1" | grep -q '"status":"completed"'
+RETURN2=$(request POST "$API/post-sales/returns" "$RETURN_BODY" "$TOKEN" 'stable-return-0001')
+[[ "$(printf '%s' "$RETURN2" | json_get id)" == "$RETURN_ID" ]]
+RETURN_SUMMARY=$(request GET "$API/cash/$RETURN_CASH_ID/summary" '' "$TOKEN")
+python3 -c 'import json,sys; s=json.loads(sys.argv[1]); assert s["expected_amount"]=="251.00",s; refunds=[m for m in s["movements"] if m.get("reference_type")=="refund"]; assert len(refunds)==1,refunds; assert refunds[0]["amount"]=="-249.00",refunds' "$RETURN_SUMMARY"
+RETURN_STOCK=$(request GET "$API/inventory" '' "$TOKEN")
+python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); pid=sys.argv[2]; row=next(r for r in rows if r["product_id"]==pid); assert row["quantity"]=="5.000",row' "$RETURN_STOCK" "$RETURN_PRODUCT_ID"
+request POST "$API/cash/$RETURN_CASH_ID/close" '{"closing_amount":"251.00"}' "$TOKEN" | grep -q '"difference":"0.00"'
+
 if docker compose logs --no-color worker 2>&1 | grep -q 'UndefinedTable'; then
   echo 'Worker arrancó antes de que Alembic terminara' >&2
   exit 1
