@@ -1,0 +1,32 @@
+[project]
+name = "mily-zebra-api"
+version = "0.1.0"
+description = "Mily Zebra Commerce OS domain API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.116.1",
+  "uvicorn[standard]==0.35.0",
+  "sqlalchemy==2.0.43",
+  "psycopg[binary]==3.2.9",
+  "pydantic-settings==2.10.1",
+  "PyJWT==2.10.1",
+  "pwdlib[argon2]==0.2.1",
+  "redis==6.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.4.1",
+  "httpx==0.28.1",
+  "ruff==0.12.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
