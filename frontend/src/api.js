@@ -62,10 +62,11 @@ export class ApiClient {
       if (tenantId) localStorage.setItem(TENANT_ID_KEY, tenantId);
       if (tenantSlug !== null) localStorage.setItem(TENANT_SLUG_KEY, String(tenantSlug || '').trim().toLowerCase());
     } else {
+      // Clear tenant-scoped snapshots while the old tenant id is still known.
+      clearSnapshots();
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(TENANT_ID_KEY);
       localStorage.removeItem(TENANT_SLUG_KEY);
-      clearSnapshots();
     }
   }
 
