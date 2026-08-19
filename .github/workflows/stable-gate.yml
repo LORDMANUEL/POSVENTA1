@@ -4,14 +4,13 @@ on:
   push:
     branches:
       - main
-      - 'stabilize/**'
   pull_request:
     branches:
       - main
   workflow_dispatch:
 
 concurrency:
-  group: stable-${{ github.workflow }}-${{ github.ref }}
+  group: stable-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
