@@ -10,13 +10,17 @@ from app.db import Base
 from app import (  # noqa: F401,E402
     accounting_models,
     admin_models,
+    automation_models,
     cash_models,
     commerce_models,
+    content_models,
+    crm_models,
     finance_models,
     media_models,
     models,
     module_registry,
     ops_models,
+    people_models,
     post_sale_models,
 )
 
