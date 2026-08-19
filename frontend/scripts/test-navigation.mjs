@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict';
 import { allowedViewsForRole, defaultViewForRole } from '../src/navigation.js';
 
-assert.deepEqual(allowedViewsForRole('cashier'), ['home', 'pos', 'cash', 'customers']);
+assert.deepEqual(allowedViewsForRole('cashier'), ['home', 'pos', 'returns', 'cash', 'customers']);
 assert.equal(defaultViewForRole('cashier'), 'pos');
+
+assert.deepEqual(
+  allowedViewsForRole('sales'),
+  ['home', 'pos', 'returns', 'products', 'customers', 'crm', 'deliveries'],
+);
+assert.equal(defaultViewForRole('sales'), 'pos');
 
 assert.deepEqual(
   allowedViewsForRole('warehouse'),
@@ -14,6 +20,7 @@ assert.deepEqual(allowedViewsForRole('driver'), ['home', 'deliveries']);
 assert.equal(defaultViewForRole('driver'), 'deliveries');
 
 const adminViews = allowedViewsForRole('admin');
+assert(adminViews.includes('returns'));
 assert(adminViews.includes('modules'));
 assert(adminViews.includes('admin'));
 assert.equal(defaultViewForRole('admin'), 'home');
