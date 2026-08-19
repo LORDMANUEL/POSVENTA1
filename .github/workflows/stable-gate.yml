@@ -31,13 +31,15 @@ jobs:
       - name: Execute extended ERP stable contract
         run: bash scripts/stable-e2e-extended.sh
       - name: Install Chromium test runtime
-        run: npx -y playwright@1.62.1 install --with-deps chromium
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund @playwright/test@1.62.1
+          npx playwright install --with-deps chromium
       - name: Execute Chromium offline and storefront journeys
         env:
           MZ_E2E_BASE_URL: http://127.0.0.1
           MZ_E2E_EMAIL: owner.e2e@milyzebra.test
           MZ_E2E_PASSWORD: StableE2E-2026!
-        run: npx -y @playwright/test@1.62.1 test e2e/stable-offline.spec.js --reporter=line
+        run: npx playwright test e2e/stable-offline.spec.js --reporter=line
       - name: Diagnostics
         if: failure()
         run: |
