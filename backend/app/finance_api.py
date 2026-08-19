@@ -7,20 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .finance_models import (
-    BankAccount,
-    BankTransaction,
-    Payable,
-    PayablePayment,
-    Receivable,
-    ReceivablePayment,
-)
+from .finance_models import BankAccount, BankTransaction, Payable, PayablePayment, Receivable, ReceivablePayment
 from .models import User, UserRole
+from .module_api import require_enabled_module
 from .ops_models import Customer, Supplier
 from .security import require_roles
 from .services import AuditService
 
-finance_router = APIRouter(prefix="/finance", tags=["finance"])
+receivables_router = APIRouter(prefix="/finance/receivables", tags=["receivables"], dependencies=[Depends(require_enabled_module("receivables"))])
+payables_router = APIRouter(prefix="/finance/payables", tags=["payables"], dependencies=[Depends(require_enabled_module("payables"))])
+banking_router = APIRouter(prefix="/finance/banking", tags=["banking"], dependencies=[Depends(require_enabled_module("banking"))])
 
 
 class OpenItemIn(BaseModel):
@@ -59,21 +55,14 @@ def apply_payment(balance: Decimal, amount: Decimal) -> tuple[Decimal, str]:
     return new_balance, "paid" if new_balance == 0 else "partial"
 
 
-@finance_router.get("/receivables")
-def list_receivables(
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
-) -> list[dict]:
+@receivables_router.get("")
+def list_receivables(db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR))) -> list[dict]:
     rows = db.scalars(select(Receivable).where(Receivable.tenant_id == user.tenant_id).order_by(Receivable.created_at.desc())).all()
     return [{"id": r.id, "customer_id": r.customer_id, "reference": r.reference, "original_amount": str(r.original_amount), "balance": str(r.balance), "due_date": r.due_date, "status": r.status} for r in rows]
 
 
-@finance_router.post("/receivables", status_code=201)
-def create_receivable(
-    payload: OpenItemIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
-) -> dict:
+@receivables_router.post("", status_code=201)
+def create_receivable(payload: OpenItemIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
     if not db.scalar(select(Customer.id).where(Customer.id == payload.party_id, Customer.tenant_id == user.tenant_id)):
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     if db.scalar(select(Receivable.id).where(Receivable.tenant_id == user.tenant_id, Receivable.reference == payload.reference)):
@@ -86,13 +75,8 @@ def create_receivable(
     return {"id": row.id, "reference": row.reference, "balance": str(row.balance), "status": row.status}
 
 
-@finance_router.post("/receivables/{receivable_id}/payments", status_code=201)
-def receive_payment(
-    receivable_id: str,
-    payload: PaymentIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER)),
-) -> dict:
+@receivables_router.post("/{receivable_id}/payments", status_code=201)
+def receive_payment(receivable_id: str, payload: PaymentIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER))) -> dict:
     item = db.scalar(select(Receivable).where(Receivable.id == receivable_id, Receivable.tenant_id == user.tenant_id))
     if not item:
         raise HTTPException(status_code=404, detail="Cuenta por cobrar no encontrada")
@@ -106,21 +90,14 @@ def receive_payment(
     return {"id": payment.id, "receivable_id": item.id, "balance": str(item.balance), "status": item.status}
 
 
-@finance_router.get("/payables")
-def list_payables(
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
-) -> list[dict]:
+@payables_router.get("")
+def list_payables(db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR))) -> list[dict]:
     rows = db.scalars(select(Payable).where(Payable.tenant_id == user.tenant_id).order_by(Payable.created_at.desc())).all()
     return [{"id": r.id, "supplier_id": r.supplier_id, "reference": r.reference, "original_amount": str(r.original_amount), "balance": str(r.balance), "due_date": r.due_date, "status": r.status} for r in rows]
 
 
-@finance_router.post("/payables", status_code=201)
-def create_payable(
-    payload: OpenItemIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
-) -> dict:
+@payables_router.post("", status_code=201)
+def create_payable(payload: OpenItemIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
     if not db.scalar(select(Supplier.id).where(Supplier.id == payload.party_id, Supplier.tenant_id == user.tenant_id)):
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
     if db.scalar(select(Payable.id).where(Payable.tenant_id == user.tenant_id, Payable.reference == payload.reference)):
@@ -133,13 +110,8 @@ def create_payable(
     return {"id": row.id, "reference": row.reference, "balance": str(row.balance), "status": row.status}
 
 
-@finance_router.post("/payables/{payable_id}/payments", status_code=201)
-def pay_payable(
-    payable_id: str,
-    payload: PaymentIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
-) -> dict:
+@payables_router.post("/{payable_id}/payments", status_code=201)
+def pay_payable(payable_id: str, payload: PaymentIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
     item = db.scalar(select(Payable).where(Payable.id == payable_id, Payable.tenant_id == user.tenant_id))
     if not item:
         raise HTTPException(status_code=404, detail="Cuenta por pagar no encontrada")
@@ -153,21 +125,14 @@ def pay_payable(
     return {"id": payment.id, "payable_id": item.id, "balance": str(item.balance), "status": item.status}
 
 
-@finance_router.get("/bank-accounts")
-def list_bank_accounts(
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR)),
-) -> list[dict]:
+@banking_router.get("/accounts")
+def list_bank_accounts(db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.AUDITOR))) -> list[dict]:
     rows = db.scalars(select(BankAccount).where(BankAccount.tenant_id == user.tenant_id).order_by(BankAccount.name)).all()
     return [{"id": row.id, "name": row.name, "bank_name": row.bank_name, "currency": row.currency, "account_last4": row.account_last4, "ledger_account_id": row.ledger_account_id} for row in rows]
 
 
-@finance_router.post("/bank-accounts", status_code=201)
-def create_bank_account(
-    payload: BankAccountIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN)),
-) -> dict:
+@banking_router.post("/accounts", status_code=201)
+def create_bank_account(payload: BankAccountIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN))) -> dict:
     row = BankAccount(tenant_id=user.tenant_id, **payload.model_dump())
     db.add(row)
     db.flush()
@@ -176,13 +141,8 @@ def create_bank_account(
     return {"id": row.id, "name": row.name, "bank_name": row.bank_name, "currency": row.currency}
 
 
-@finance_router.post("/bank-accounts/{bank_account_id}/transactions", status_code=201)
-def add_bank_transaction(
-    bank_account_id: str,
-    payload: BankTransactionIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER)),
-) -> dict:
+@banking_router.post("/accounts/{bank_account_id}/transactions", status_code=201)
+def add_bank_transaction(bank_account_id: str, payload: BankTransactionIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER))) -> dict:
     account = db.scalar(select(BankAccount).where(BankAccount.id == bank_account_id, BankAccount.tenant_id == user.tenant_id))
     if not account:
         raise HTTPException(status_code=404, detail="Cuenta bancaria no encontrada")
