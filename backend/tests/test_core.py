@@ -31,6 +31,16 @@ def test_bootstrap_login_and_product_flow(client, owner_headers) -> None:
     assert moved.status_code == 200
     assert moved.json()["quantity"] == "5.000"
 
+    no_cash_session = client.post(
+        "/sales",
+        headers={**owner_headers, "Idempotency-Key": "sale-without-cash-session"},
+        json={"payment_method": "cash", "lines": [{"product_id": product_id, "quantity": "1"}]},
+    )
+    assert no_cash_session.status_code == 409
+
+    opened = client.post("/cash/open", headers=owner_headers, json={"opening_amount": "500.00"})
+    assert opened.status_code == 201
+
     sold = client.post(
         "/sales",
         headers={**owner_headers, "Idempotency-Key": "sale-test-0001"},
