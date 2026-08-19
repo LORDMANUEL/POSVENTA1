@@ -21,6 +21,13 @@ rag_router = APIRouter(prefix="/rag", tags=["rag"], dependencies=[Depends(requir
 ai_router = APIRouter(prefix="/ai", tags=["ai"], dependencies=[Depends(require_enabled_module("ai"))])
 settings = get_settings()
 
+STOPWORDS = {
+    "de", "del", "la", "las", "el", "los", "un", "una", "unos", "unas", "y", "o", "a", "al",
+    "en", "por", "para", "con", "sin", "que", "qué", "como", "cómo", "cual", "cuál", "cuales",
+    "cuáles", "es", "son", "se", "si", "sí", "mi", "mis", "tu", "tus", "su", "sus", "lo", "me",
+    "te", "necesito", "puedo", "debo", "hay", "sobre",
+}
+
 
 class KnowledgeIn(BaseModel):
     source_key: str = Field(min_length=2, max_length=180)
@@ -35,7 +42,11 @@ class AskIn(BaseModel):
 
 
 def tokenize(text: str) -> list[str]:
-    return [token for token in re.findall(r"[a-záéíóúüñ0-9]{2,}", text.lower())]
+    return [
+        token
+        for token in re.findall(r"[a-záéíóúüñ0-9]{2,}", text.lower())
+        if token not in STOPWORDS
+    ]
 
 
 def split_content(content: str, max_chars: int = 1800) -> list[str]:
@@ -59,6 +70,8 @@ def split_content(content: str, max_chars: int = 1800) -> list[str]:
 
 def retrieve(db: Session, tenant_id: str, question: str, limit: int) -> list[dict]:
     query_terms = Counter(tokenize(question))
+    if not query_terms:
+        return []
     rows = db.execute(
         select(KnowledgeChunk, KnowledgeDocument)
         .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
@@ -67,13 +80,25 @@ def retrieve(db: Session, tenant_id: str, question: str, limit: int) -> list[dic
     scored = []
     for chunk, document in rows:
         terms = Counter(tokenize(chunk.content))
+        overlap = {term for term in query_terms if terms.get(term, 0) > 0}
         score = sum(min(count, terms.get(term, 0)) for term, count in query_terms.items())
-        if score > 0:
-            scored.append((score, chunk, document))
-    scored.sort(key=lambda item: item[0], reverse=True)
+        # A single meaningful exact term is accepted; stopwords have already been removed.
+        # This keeps retrieval useful for product/policy names while rejecting accidental matches
+        # such as common Spanish prepositions.
+        if score > 0 and overlap:
+            scored.append((score, len(overlap), chunk, document))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [
-        {"chunk_id": chunk.id, "document_id": document.id, "title": document.title, "source_key": document.source_key, "score": score, "content": chunk.content}
-        for score, chunk, document in scored[:limit]
+        {
+            "chunk_id": chunk.id,
+            "document_id": document.id,
+            "title": document.title,
+            "source_key": document.source_key,
+            "score": score,
+            "matched_terms": overlap_count,
+            "content": chunk.content,
+        }
+        for score, overlap_count, chunk, document in scored[:limit]
     ]
 
 
@@ -102,8 +127,17 @@ def ollama_generate(question: str, sources: list[dict]) -> str | None:
 
 
 @rag_router.post("/documents", status_code=201)
-def add_document(payload: KnowledgeIn, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.SUPPORT))) -> dict:
-    existing = db.scalar(select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == user.tenant_id, KnowledgeDocument.source_key == payload.source_key))
+def add_document(
+    payload: KnowledgeIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN, UserRole.MANAGER, UserRole.SUPPORT)),
+) -> dict:
+    existing = db.scalar(
+        select(KnowledgeDocument).where(
+            KnowledgeDocument.tenant_id == user.tenant_id,
+            KnowledgeDocument.source_key == payload.source_key,
+        )
+    )
     if existing:
         chunks = db.scalars(select(KnowledgeChunk).where(KnowledgeChunk.document_id == existing.id)).all()
         for chunk in chunks:
@@ -112,13 +146,32 @@ def add_document(payload: KnowledgeIn, db: Session = Depends(get_db), user: User
         existing.source_type = payload.source_type
         document = existing
     else:
-        document = KnowledgeDocument(tenant_id=user.tenant_id, source_key=payload.source_key, title=payload.title, source_type=payload.source_type)
+        document = KnowledgeDocument(
+            tenant_id=user.tenant_id,
+            source_key=payload.source_key,
+            title=payload.title,
+            source_type=payload.source_type,
+        )
         db.add(document)
         db.flush()
     pieces = split_content(payload.content)
     for index, content in enumerate(pieces):
-        db.add(KnowledgeChunk(tenant_id=user.tenant_id, document_id=document.id, chunk_index=index, content=content))
-    AuditService.record(db, user, "knowledge.upserted", "knowledge_document", document.id, {"source_key": document.source_key, "chunks": len(pieces)})
+        db.add(
+            KnowledgeChunk(
+                tenant_id=user.tenant_id,
+                document_id=document.id,
+                chunk_index=index,
+                content=content,
+            )
+        )
+    AuditService.record(
+        db,
+        user,
+        "knowledge.upserted",
+        "knowledge_document",
+        document.id,
+        {"source_key": document.source_key, "chunks": len(pieces)},
+    )
     db.commit()
     return {"id": document.id, "source_key": document.source_key, "chunks": len(pieces)}
 
@@ -132,9 +185,20 @@ def search_knowledge(payload: AskIn, db: Session = Depends(get_db), user: User =
 def ask(payload: AskIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     sources = retrieve(db, user.tenant_id, payload.question, payload.limit)
     if not sources:
-        return {"answer": "No encontré información suficiente en el conocimiento autorizado para responder.", "mode": "no_context", "sources": []}
+        return {
+            "answer": "No encontré información suficiente en el conocimiento autorizado para responder.",
+            "mode": "no_context",
+            "sources": [],
+        }
     generated = ollama_generate(payload.question, sources)
     if generated:
-        return {"answer": generated, "mode": "ollama_rag", "model": settings.ollama_model, "sources": sources}
-    evidence = "\n\n".join(f"[{index + 1}] {item['title']}: {item['content']}" for index, item in enumerate(sources))
+        return {
+            "answer": generated,
+            "mode": "ollama_rag",
+            "model": settings.ollama_model,
+            "sources": sources,
+        }
+    evidence = "\n\n".join(
+        f"[{index + 1}] {item['title']}: {item['content']}" for index, item in enumerate(sources)
+    )
     return {"answer": evidence, "mode": "retrieval_only", "sources": sources}
