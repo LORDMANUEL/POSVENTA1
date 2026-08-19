@@ -3,6 +3,11 @@ def enable_module(client, headers, key: str) -> None:
     assert response.status_code == 200, response.text
 
 
+def disable_module(client, headers, key: str) -> None:
+    response = client.put(f"/admin/modules/{key}?enabled=false", headers=headers)
+    assert response.status_code == 200, response.text
+
+
 def create_product(client, headers, sku="MZ-OPS-001"):
     response = client.post(
         "/products",
@@ -19,7 +24,14 @@ def create_product(client, headers, sku="MZ-OPS-001"):
     return response.json()["id"]
 
 
-def test_optional_ops_are_fail_closed(client, owner_headers) -> None:
+def test_internal_ops_are_enabled_by_default_and_can_fail_closed(client, owner_headers) -> None:
+    assert client.get("/ops/suppliers", headers=owner_headers).status_code == 200
+    assert client.get("/ops/deliveries", headers=owner_headers).status_code == 200
+
+    # Purchasing has payables as a dependant in the default full-internal profile.
+    disable_module(client, owner_headers, "payables")
+    disable_module(client, owner_headers, "purchasing")
+    disable_module(client, owner_headers, "delivery")
     assert client.get("/ops/suppliers", headers=owner_headers).status_code == 403
     assert client.get("/ops/deliveries", headers=owner_headers).status_code == 403
 
