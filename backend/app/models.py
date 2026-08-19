@@ -5,7 +5,19 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -134,6 +146,7 @@ class Sale(Base):
     branch_id: Mapped[str] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)
     cashier_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     discount_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     tax_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
@@ -158,6 +171,16 @@ class SaleLine(Base):
 
 class CashSession(Base):
     __tablename__ = "cash_sessions"
+    __table_args__ = (
+        Index(
+            "uq_cash_open_user",
+            "tenant_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("closed_at IS NULL"),
+            sqlite_where=text("closed_at IS NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
@@ -168,6 +191,9 @@ class CashSession(Base):
     expected_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class PrintJob(Base):
@@ -184,6 +210,9 @@ class PrintJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class AuditEvent(Base):
