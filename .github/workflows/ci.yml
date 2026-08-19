@@ -59,12 +59,71 @@ jobs:
       - name: Install backend
         working-directory: backend
         run: pip install -e '.[dev]'
-      - name: Upgrade schema
+      - name: Upgrade fresh schema
         working-directory: backend
         run: alembic upgrade head
-      - name: Verify migration state
+      - name: Verify fresh migration state
         working-directory: backend
         run: alembic current | grep 20260819_0010
+
+  migrations_legacy_upgrade:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: milyzebra_legacy_ci
+          POSTGRES_USER: milyzebra
+          POSTGRES_PASSWORD: ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U milyzebra -d milyzebra_legacy_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DATABASE_URL: postgresql+psycopg://milyzebra:ci-password@127.0.0.1:5432/milyzebra_legacy_ci
+      AUTO_CREATE_SCHEMA: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install backend
+        working-directory: backend
+        run: pip install -e '.[dev]'
+      - name: Build previous stable revision
+        working-directory: backend
+        run: alembic upgrade 20260818_0009
+      - name: Reproduce historical v0.12.0 return schema
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          engine = create_engine(os.environ['DATABASE_URL'])
+          with engine.begin() as conn:
+              conn.execute(text('ALTER TABLE return_records DROP CONSTRAINT IF EXISTS uq_return_idempotency'))
+              conn.execute(text('ALTER TABLE return_records DROP COLUMN IF EXISTS idempotency_key'))
+          PY
+      - name: Upgrade previous stable to v0.12.1
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Verify converged schema
+        working-directory: backend
+        run: |
+          alembic current | grep 20260819_0010
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, inspect
+          engine = create_engine(os.environ['DATABASE_URL'])
+          inspector = inspect(engine)
+          columns = {c['name'] for c in inspector.get_columns('return_records')}
+          uniques = {u['name'] for u in inspector.get_unique_constraints('return_records') if u.get('name')}
+          assert 'idempotency_key' in columns, columns
+          assert 'uq_return_idempotency' in uniques, uniques
+          PY
 
   frontend:
     runs-on: ubuntu-latest
