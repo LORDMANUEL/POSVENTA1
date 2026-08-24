@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .accounting_integration import AccountingIntegrationService
 from .db import get_db
 from .models import Branch, User, UserRole
 from .module_api import require_enabled_module
@@ -134,16 +135,36 @@ def add_payroll_line(run_id: str, payload: PayrollLineIn, db: Session = Depends(
 
 @payroll_router.post("/runs/{run_id}/approve")
 def approve_payroll(run_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.OWNER, UserRole.ADMIN))) -> dict:
-    run = db.scalar(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == user.tenant_id))
+    query = select(PayrollRun).where(
+        PayrollRun.id == run_id,
+        PayrollRun.tenant_id == user.tenant_id,
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        query = query.with_for_update()
+    run = db.scalar(query)
     if not run:
         raise HTTPException(status_code=404, detail="Nómina no encontrada")
-    if run.status == "approved":
-        return {"id": run.id, "status": run.status, "approved_at": run.approved_at}
-    count = len(db.scalars(select(PayrollLine).where(PayrollLine.payroll_run_id == run.id)).all())
-    if count == 0:
+
+    lines = db.scalars(
+        select(PayrollLine).where(PayrollLine.payroll_run_id == run.id)
+    ).all()
+    if not lines:
         raise HTTPException(status_code=409, detail="No se puede aprobar una nómina sin líneas")
-    run.status = "approved"
-    run.approved_at = datetime.now(timezone.utc)
-    AuditService.record(db, user, "payroll.run.approved", "payroll_run", run.id, {"lines": count})
+
+    # Always invoke the idempotent accounting posting. This repairs legacy rows
+    # that may already be marked approved but never generated their journal.
+    AccountingIntegrationService.post_payroll(db, user, run, lines)
+
+    if run.status != "approved":
+        run.status = "approved"
+        run.approved_at = datetime.now(timezone.utc)
+        AuditService.record(
+            db,
+            user,
+            "payroll.run.approved",
+            "payroll_run",
+            run.id,
+            {"lines": len(lines)},
+        )
     db.commit()
     return {"id": run.id, "status": run.status, "approved_at": run.approved_at}
