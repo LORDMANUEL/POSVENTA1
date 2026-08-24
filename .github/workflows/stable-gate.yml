@@ -125,7 +125,7 @@ jobs:
         working-directory: backend
         run: pytest -q postgres_tests
 
-  upgrade_from_main:
+  upgrade_from_previous_release:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -149,10 +149,10 @@ jobs:
       MEDIA_ROOT: /tmp/mily-zebra-upgrade-media
       OLLAMA_URL: ''
     steps:
-      - name: Checkout current stable main
+      - name: Checkout immutable v0.12.0-rc1 release baseline
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: release/v0.12.0-rc1
           path: previous
       - name: Checkout candidate
         uses: actions/checkout@v4
@@ -161,9 +161,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Build database using main exactly as deployed
+      - name: Build database from exact v0.12.0-rc1 baseline
         working-directory: previous/backend
         run: |
+          test "$(cat ../VERSION)" = "0.12.0-rc1"
           pip install -e '.[dev]'
           alembic upgrade head
           alembic current | grep 20260818_0009
