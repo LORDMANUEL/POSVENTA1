@@ -1,5 +1,5 @@
-import { setConnectivity } from './connectivity';
-import { clearSnapshots, isSnapshotPath, loadSnapshot, saveSnapshot } from './offlineSnapshot';
+import { setConnectivity } from './connectivity.js';
+import { clearSnapshots, isSnapshotPath, loadSnapshot, saveSnapshot } from './offlineSnapshot.js';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 const TOKEN_KEY = 'mz_token';
