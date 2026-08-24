@@ -12,6 +12,7 @@ from .accounting_api import accounting_router
 from .admin_api import admin_router, device_router
 from .analytics_api import analytics_router
 from .api import router
+from .audit_api import audit_router
 from .automation_api import integration_router, workflow_router
 from .bank_reconciliation_api import reconciliation_router
 from .catalog_import_api import catalog_import_router
@@ -29,6 +30,7 @@ from .knowledge_api import ai_router, rag_router
 from .media_api import media_router
 from .module_api import module_router, require_enabled_module
 from .ops_api import ops_router
+from .payments_api import payments_router
 from .people_api import attendance_router, hr_router, payroll_router
 from .platform_api import platform_router
 from .post_sale_api import post_sale_router
@@ -93,6 +95,7 @@ def health() -> dict[str, str]:
 
 app.include_router(router)
 app.include_router(platform_router)
+app.include_router(audit_router)
 app.include_router(ops_router)
 app.include_router(inventory_advanced_router)
 app.include_router(media_router)
@@ -104,6 +107,7 @@ app.include_router(module_router)
 app.include_router(post_sale_router)
 app.include_router(store_router)
 app.include_router(commerce_router)
+app.include_router(payments_router)
 app.include_router(
     accounting_router,
     dependencies=[Depends(require_enabled_module("accounting"))],
