@@ -22,6 +22,20 @@ class Settings(BaseSettings):
             "CERTIFIED_EXTERNAL_MODULES",
         ),
     )
+    sandbox_external_modules: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "MZ_SANDBOX_EXTERNAL_MODULES",
+            "SANDBOX_EXTERNAL_MODULES",
+        ),
+    )
+    payment_sandbox_webhook_secret: str = Field(
+        default="mily-zebra-sandbox-only",
+        validation_alias=AliasChoices(
+            "MZ_PAYMENT_SANDBOX_WEBHOOK_SECRET",
+            "PAYMENT_SANDBOX_WEBHOOK_SECRET",
+        ),
+    )
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
     auto_create_schema: bool = True
     media_root: str = "/data/media"
@@ -40,13 +54,21 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
 
-    @property
-    def certified_external_module_set(self) -> frozenset[str]:
+    @staticmethod
+    def _module_set(value: str) -> frozenset[str]:
         return frozenset(
             item.strip().lower()
-            for item in self.certified_external_modules.split(",")
+            for item in value.split(",")
             if item.strip()
         )
+
+    @property
+    def certified_external_module_set(self) -> frozenset[str]:
+        return self._module_set(self.certified_external_modules)
+
+    @property
+    def sandbox_external_module_set(self) -> frozenset[str]:
+        return self._module_set(self.sandbox_external_modules)
 
     @property
     def outbox_targets(self) -> dict[str, str]:
