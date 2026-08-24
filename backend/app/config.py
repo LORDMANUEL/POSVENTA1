@@ -15,6 +15,13 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("MZ_BOOTSTRAP_TOKEN", "BOOTSTRAP_TOKEN"),
     )
+    certified_external_modules: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "MZ_CERTIFIED_EXTERNAL_MODULES",
+            "CERTIFIED_EXTERNAL_MODULES",
+        ),
+    )
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
     auto_create_schema: bool = True
     media_root: str = "/data/media"
@@ -32,6 +39,14 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def certified_external_module_set(self) -> frozenset[str]:
+        return frozenset(
+            item.strip().lower()
+            for item in self.certified_external_modules.split(",")
+            if item.strip()
+        )
 
     @property
     def outbox_targets(self) -> dict[str, str]:
