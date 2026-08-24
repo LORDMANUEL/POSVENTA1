@@ -1,6 +1,7 @@
 from functools import lru_cache
 import json
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +11,10 @@ class Settings(BaseSettings):
     jwt_secret: str = "development-only-change-me"
     jwt_issuer: str = "mily-zebra"
     jwt_ttl_minutes: int = 480
-    bootstrap_token: str = ""
+    bootstrap_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("MZ_BOOTSTRAP_TOKEN", "BOOTSTRAP_TOKEN"),
+    )
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
     auto_create_schema: bool = True
     media_root: str = "/data/media"
