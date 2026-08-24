@@ -11,8 +11,6 @@ on:
 
 concurrency:
   group: stable-${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
-  # Every release-candidate SHA owns an independent proof. It neither cancels
-  # nor waits behind an obsolete SHA from the same stabilization branch.
   cancel-in-progress: false
 
 jobs:
@@ -23,6 +21,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify release metadata consistency
+        run: python scripts/check-release-consistency.py
       - name: Prepare isolated stable environment
         run: |
           cp .env.example .env
@@ -38,6 +41,8 @@ jobs:
         run: bash scripts/stable-e2e.sh
       - name: Execute extended ERP stable contract
         run: bash scripts/stable-e2e-extended.sh
+      - name: Execute 36-module smoke matrix
+        run: bash scripts/module-smoke.sh
       - name: Install Chromium test runtime
         run: |
           npm install --no-save --no-package-lock --no-audit --no-fund @playwright/test@1.62.1
@@ -66,6 +71,34 @@ jobs:
           docker compose ps
           docker compose logs --no-color --tail=500
       - name: Stop stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  external_sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare software-only external sandbox
+        run: |
+          cp .env.example .env
+          sed -i 's/change-this-in-production/external-sandbox-db-password/g' .env
+          sed -i 's/change-this-to-a-long-random-secret/external-sandbox-jwt-secret-at-least-32-chars/g' .env
+          sed -i 's/change-this-bootstrap-token/sandbox-external-bootstrap-token/g' .env
+          sed -i 's/^MZ_SANDBOX_EXTERNAL_MODULES=.*/MZ_SANDBOX_EXTERNAL_MODULES=payments,fiscal,music,visual/' .env
+          sed -i 's/^MZ_PAYMENT_SANDBOX_WEBHOOK_SECRET=.*/MZ_PAYMENT_SANDBOX_WEBHOOK_SECRET=external-sandbox-webhook-secret/' .env
+          sed -i 's/^MZ_SITE_ADDRESS=.*/MZ_SITE_ADDRESS=:80/' .env
+      - name: Build external sandbox stack
+        run: docker compose up -d --build
+      - name: Exercise external module software contracts
+        env:
+          MZ_BOOTSTRAP_TOKEN: sandbox-external-bootstrap-token
+        run: bash scripts/external-sandbox-smoke.sh
+      - name: External sandbox diagnostics
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=500
+      - name: Stop external sandbox
         if: always()
         run: docker compose down -v --remove-orphans
 
@@ -125,7 +158,7 @@ jobs:
         working-directory: backend
         run: pytest -q postgres_tests
 
-  upgrade_from_main:
+  upgrade_from_previous_release:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -149,10 +182,10 @@ jobs:
       MEDIA_ROOT: /tmp/mily-zebra-upgrade-media
       OLLAMA_URL: ''
     steps:
-      - name: Checkout current stable main
+      - name: Checkout immutable v0.12.0-rc1 release baseline
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: release/v0.12.0-rc1
           path: previous
       - name: Checkout candidate
         uses: actions/checkout@v4
@@ -161,9 +194,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Build database using main exactly as deployed
+      - name: Build database from exact v0.12.0-rc1 baseline
         working-directory: previous/backend
         run: |
+          test "$(cat ../VERSION)" = "0.12.0-rc1"
           pip install -e '.[dev]'
           alembic upgrade head
           alembic current | grep 20260818_0009
@@ -281,12 +315,8 @@ jobs:
                   "SELECT user_id FROM platform_operators WHERE user_id=:owner_id"
               ), {'owner_id': owner_id}).scalar_one()
               assert operator_id == owner_id
-              sale_cost = conn.execute(text(
-                  "SELECT unit_cost FROM sale_lines LIMIT 1"
-              )).scalar_one()
-              order_cost = conn.execute(text(
-                  "SELECT unit_cost FROM order_lines LIMIT 1"
-              )).scalar_one()
+              sale_cost = conn.execute(text("SELECT unit_cost FROM sale_lines LIMIT 1")).scalar_one()
+              order_cost = conn.execute(text("SELECT unit_cost FROM order_lines LIMIT 1")).scalar_one()
               assert Decimal(sale_cost) == Decimal('42.50')
               assert Decimal(order_cost) == Decimal('42.50')
           PY
@@ -295,6 +325,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify release metadata consistency
+        run: python3 scripts/check-release-consistency.py
       - name: Execute supported VPS installer
         run: sudo bash ./install.sh
       - name: Verify installed system

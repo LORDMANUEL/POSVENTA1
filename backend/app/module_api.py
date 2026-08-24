@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .config import get_settings
 from .db import get_db
 from .models import User, UserRole
 from .module_registry import MODULES, TenantModule
@@ -12,8 +13,6 @@ from .services import AuditService
 
 module_router = APIRouter(prefix="/admin/modules", tags=["modules"])
 
-# Modules whose complete internal runtime can be enabled without pretending that an
-# external provider, physical device or fiscal homologation was certified.
 FULL_INTERNAL_PROFILE = (
     "purchasing",
     "delivery",
@@ -46,8 +45,27 @@ EXTERNAL_GATED = {
 DEFAULT_ENABLED = frozenset(FULL_INTERNAL_PROFILE)
 
 
+def external_mode(key: str) -> str:
+    """Return blocked, sandbox or certified for external module deployments."""
+
+    if key not in EXTERNAL_GATED:
+        return "internal"
+    settings = get_settings()
+    if key in settings.certified_external_module_set:
+        return "certified"
+    if key in settings.sandbox_external_module_set:
+        return "sandbox"
+    return "blocked"
+
+
+def external_ready(key: str) -> bool:
+    return external_mode(key) != "blocked"
+
+
 def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
     definition = MODULES[key]
+    if not external_ready(key):
+        return False
     row = db.scalar(
         select(TenantModule).where(
             TenantModule.tenant_id == tenant_id,
@@ -55,9 +73,6 @@ def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
         )
     )
     if row is None:
-        # A freshly installed store is operational immediately: all software-only
-        # modules that passed the stable gate are enabled by default. External-gated
-        # modules remain off until an explicit certified integration is available.
         return definition.core or key in DEFAULT_ENABLED
     return row.enabled
 
@@ -112,6 +127,7 @@ def list_modules(
             "core": item.core,
             "enabled": effective_enabled(db, user.tenant_id, item.key),
             "external_gate": EXTERNAL_GATED.get(item.key),
+            "external_mode": external_mode(item.key) if item.key in EXTERNAL_GATED else None,
         }
         for item in MODULES.values()
     ]
@@ -167,6 +183,14 @@ def set_module(
         raise HTTPException(status_code=404, detail="Módulo no registrado")
     if definition.core and not enabled:
         raise HTTPException(status_code=409, detail="Los módulos núcleo no se pueden desactivar")
+    if enabled and module_key in EXTERNAL_GATED and not external_ready(module_key):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Módulo '{module_key}' bloqueado hasta completar certificación: "
+                f"{EXTERNAL_GATED[module_key]}"
+            ),
+        )
     if enabled:
         ensure_dependencies(db, user.tenant_id, module_key)
     else:
@@ -182,13 +206,17 @@ def set_module(
             )
 
     _set_enabled(db, user.tenant_id, module_key, enabled)
+    mode = external_mode(module_key)
     AuditService.record(
         db,
         user,
         "module.changed",
         "tenant_module",
         module_key,
-        {"enabled": enabled},
+        {"enabled": enabled, "external_mode": mode},
     )
     db.commit()
-    return {"key": module_key, "enabled": enabled}
+    response = {"key": module_key, "enabled": enabled}
+    if module_key in EXTERNAL_GATED:
+        response["external_mode"] = mode
+    return response

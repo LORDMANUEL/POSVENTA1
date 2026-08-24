@@ -22,17 +22,18 @@ def test_public_checkout_reserves_tracks_and_fulfills_stock(client, owner_header
     assert catalog.status_code == 200
     assert catalog.json()["products"][0]["id"] == product_id
 
+    checkout_payload = {
+        "full_name": "Cliente Web",
+        "email": "cliente@example.com",
+        "phone": "+50422222222",
+        "payment_method": "manual_transfer",
+        "fulfillment_method": "pickup",
+        "lines": [{"product_id": product_id, "quantity": "2"}],
+    }
     checkout = client.post(
         "/store/mily-zebra/checkout",
         headers={"Idempotency-Key": "web-order-0001"},
-        json={
-            "full_name": "Cliente Web",
-            "email": "cliente@example.com",
-            "phone": "+50422222222",
-            "payment_method": "manual_transfer",
-            "fulfillment_method": "pickup",
-            "lines": [{"product_id": product_id, "quantity": "2"}],
-        },
+        json=checkout_payload,
     )
     assert checkout.status_code == 201
     body = checkout.json()
@@ -43,12 +44,7 @@ def test_public_checkout_reserves_tracks_and_fulfills_stock(client, owner_header
     repeated = client.post(
         "/store/mily-zebra/checkout",
         headers={"Idempotency-Key": "web-order-0001"},
-        json={
-            "full_name": "Cliente Web",
-            "email": "cliente@example.com",
-            "payment_method": "manual_transfer",
-            "lines": [{"product_id": product_id, "quantity": "2"}],
-        },
+        json=checkout_payload,
     )
     assert repeated.status_code == 201
     assert repeated.json()["id"] == body["id"]
