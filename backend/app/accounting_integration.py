@@ -22,9 +22,12 @@ SYSTEM_ACCOUNTS: dict[str, tuple[str, str]] = {
     "1200": ("Cuentas por cobrar", "asset"),
     "1300": ("Inventario", "asset"),
     "2000": ("Cuentas por pagar", "liability"),
+    "2100": ("Nómina por pagar", "liability"),
+    "2110": ("Retenciones de nómina por pagar", "liability"),
     "4000": ("Ventas", "income"),
     "4010": ("Devoluciones sobre ventas", "income"),
     "5000": ("Costo de ventas", "expense"),
+    "5100": ("Sueldos, salarios y bonos", "expense"),
 }
 
 
@@ -116,10 +119,7 @@ class AccountingIntegrationService:
                 ),
             )
         if not account.active:
-            raise HTTPException(
-                status_code=409,
-                detail=f"La cuenta reservada {code} está inactiva",
-            )
+            raise HTTPException(status_code=409, detail=f"La cuenta reservada {code} está inactiva")
         if not account.system:
             account.system = True
         return account
@@ -248,12 +248,7 @@ class AccountingIntegrationService:
         )
 
     @classmethod
-    def post_purchase_receipt(
-        cls,
-        db: Session,
-        user: User,
-        purchase,
-    ) -> JournalEntry | None:
+    def post_purchase_receipt(cls, db: Session, user: User, purchase) -> JournalEntry | None:
         total = _money(
             sum(
                 (Decimal(line.quantity) * Decimal(line.unit_cost) for line in purchase.lines),
@@ -306,14 +301,7 @@ class AccountingIntegrationService:
         return entry
 
     @classmethod
-    def post_return(
-        cls,
-        db: Session,
-        user: User,
-        record,
-        prepared,
-        payment_method: str,
-    ) -> JournalEntry | None:
+    def post_return(cls, db: Session, user: User, record, prepared, payment_method: str) -> JournalEntry | None:
         revenue = _money(Decimal(record.total))
         cost = _money(
             sum(
@@ -345,13 +333,7 @@ class AccountingIntegrationService:
         )
 
     @classmethod
-    def post_order_revenue(
-        cls,
-        db: Session,
-        user: User,
-        order,
-        payment_method: str,
-    ) -> JournalEntry | None:
+    def post_order_revenue(cls, db: Session, user: User, order, payment_method: str) -> JournalEntry | None:
         total = _money(Decimal(order.total))
         settlement_account = "1100" if payment_method == "cash_on_delivery" else "1110"
         return cls._post(
@@ -369,12 +351,7 @@ class AccountingIntegrationService:
         )
 
     @classmethod
-    def post_order_cogs(
-        cls,
-        db: Session,
-        user: User,
-        order,
-    ) -> JournalEntry | None:
+    def post_order_cogs(cls, db: Session, user: User, order) -> JournalEntry | None:
         cost = _money(
             sum(
                 (Decimal(line.unit_cost) * Decimal(line.quantity) for line in order.lines),
@@ -395,4 +372,45 @@ class AccountingIntegrationService:
                 ("5000", cost, Decimal("0"), "Costo de pedido ecommerce"),
                 ("1300", Decimal("0"), cost, "Salida de inventario ecommerce"),
             ],
+        )
+
+    @classmethod
+    def post_payroll(cls, db: Session, user: User, payroll_run, payroll_lines) -> JournalEntry | None:
+        expense = _money(
+            sum(
+                (Decimal(line.gross) + Decimal(line.bonuses) for line in payroll_lines),
+                Decimal("0"),
+            )
+        )
+        deductions = _money(
+            sum((Decimal(line.deductions) for line in payroll_lines), Decimal("0"))
+        )
+        net = _money(sum((Decimal(line.net) for line in payroll_lines), Decimal("0")))
+        if expense <= 0:
+            return None
+        if expense != net + deductions:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Nómina desbalanceada: gasto {expense} != neto {net} + "
+                    f"retenciones {deductions}"
+                ),
+            )
+        journal_lines: list[tuple[str, Decimal, Decimal, str]] = [
+            ("5100", expense, Decimal("0"), "Gasto de nómina"),
+            ("2100", Decimal("0"), net, "Nómina neta por pagar"),
+        ]
+        if deductions > 0:
+            journal_lines.append(
+                ("2110", Decimal("0"), deductions, "Retenciones de nómina por pagar")
+            )
+        return cls._post(
+            db,
+            user,
+            reference=f"PAYROLL:{payroll_run.id}",
+            description=f"Nómina {payroll_run.period_key}",
+            source_type="payroll_approval",
+            source_id=payroll_run.id,
+            branch_id=None,
+            lines=journal_lines,
         )
