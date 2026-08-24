@@ -12,7 +12,6 @@ from .security import get_current_user, require_roles
 from .services import AuditService
 
 module_router = APIRouter(prefix="/admin/modules", tags=["modules"])
-settings = get_settings()
 
 # Modules whose complete internal runtime can be enabled without pretending that an
 # external provider, physical device or fiscal homologation was certified.
@@ -48,15 +47,26 @@ EXTERNAL_GATED = {
 DEFAULT_ENABLED = frozenset(FULL_INTERNAL_PROFILE)
 
 
-def external_ready(key: str) -> bool:
-    """Return whether deployment operators explicitly unlocked a certified adapter.
+def external_mode(key: str) -> str:
+    """Return deployment mode for an external-gated module.
 
-    The environment flag is not itself certification evidence. It is the final
-    deployment switch to set only after the provider/physical certification has
-    been completed and documented for this installation.
+    `sandbox` is software-certification mode only; it is never equivalent to a
+    provider/physical certification. Production deployments should use
+    `certified` only after external evidence has been completed and documented.
     """
 
-    return key not in EXTERNAL_GATED or key in settings.certified_external_module_set
+    if key not in EXTERNAL_GATED:
+        return "internal"
+    settings = get_settings()
+    if key in settings.certified_external_module_set:
+        return "certified"
+    if key in settings.sandbox_external_module_set:
+        return "sandbox"
+    return "blocked"
+
+
+def external_ready(key: str) -> bool:
+    return external_mode(key) != "blocked"
 
 
 def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
@@ -73,7 +83,7 @@ def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
     if row is None:
         # A freshly installed store is operational immediately: all software-only
         # modules that passed the stable gate are enabled by default. External-gated
-        # modules remain off until an explicit certified integration is available.
+        # modules remain opt-in even in sandbox/certified deployments.
         return definition.core or key in DEFAULT_ENABLED
     return row.enabled
 
@@ -128,7 +138,7 @@ def list_modules(
             "core": item.core,
             "enabled": effective_enabled(db, user.tenant_id, item.key),
             "external_gate": EXTERNAL_GATED.get(item.key),
-            "external_ready": external_ready(item.key) if item.key in EXTERNAL_GATED else None,
+            "external_mode": external_mode(item.key) if item.key in EXTERNAL_GATED else None,
         }
         for item in MODULES.values()
     ]
@@ -213,7 +223,7 @@ def set_module(
         "module.changed",
         "tenant_module",
         module_key,
-        {"enabled": enabled},
+        {"enabled": enabled, "external_mode": external_mode(module_key)},
     )
     db.commit()
-    return {"key": module_key, "enabled": enabled}
+    return {"key": module_key, "enabled": enabled, "external_mode": external_mode(module_key)}
