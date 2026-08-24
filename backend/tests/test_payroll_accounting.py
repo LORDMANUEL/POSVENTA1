@@ -6,7 +6,7 @@ from app.accounting_models import Account, JournalEntry, JournalLine
 from app.db import SessionLocal
 
 
-def test_payroll_approval_posts_net_payable_and_expense_once(client, owner_headers) -> None:
+def test_payroll_approval_posts_expense_net_and_withholdings_once(client, owner_headers) -> None:
     me = client.get('/me', headers=owner_headers).json()
     employee = client.post(
         '/hr/employees',
@@ -67,5 +67,6 @@ def test_payroll_approval_posts_net_payable_and_expense_once(client, owner_heade
             .where(JournalLine.journal_entry_id == entry.id)
         ).all()
         by_code = {code: (Decimal(debit), Decimal(credit)) for code, debit, credit in rows}
-        assert by_code['5100'] == (Decimal('525.00'), Decimal('0.00'))
+        assert by_code['5100'] == (Decimal('550.00'), Decimal('0.00'))
         assert by_code['2100'] == (Decimal('0.00'), Decimal('525.00'))
+        assert by_code['2110'] == (Decimal('0.00'), Decimal('25.00'))
