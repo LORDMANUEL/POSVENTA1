@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .config import get_settings
 from .db import get_db
 from .models import User, UserRole
 from .module_registry import MODULES, TenantModule
@@ -11,6 +12,7 @@ from .security import get_current_user, require_roles
 from .services import AuditService
 
 module_router = APIRouter(prefix="/admin/modules", tags=["modules"])
+settings = get_settings()
 
 # Modules whose complete internal runtime can be enabled without pretending that an
 # external provider, physical device or fiscal homologation was certified.
@@ -46,8 +48,22 @@ EXTERNAL_GATED = {
 DEFAULT_ENABLED = frozenset(FULL_INTERNAL_PROFILE)
 
 
+def external_ready(key: str) -> bool:
+    """Return whether deployment operators explicitly unlocked a certified adapter.
+
+    The environment flag is not itself certification evidence. It is the final
+    deployment switch to set only after the provider/physical certification has
+    been completed and documented for this installation.
+    """
+
+    return key not in EXTERNAL_GATED or key in settings.certified_external_module_set
+
+
 def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
     definition = MODULES[key]
+    if not external_ready(key):
+        # Fail closed even if a stale/legacy tenant_modules row says enabled.
+        return False
     row = db.scalar(
         select(TenantModule).where(
             TenantModule.tenant_id == tenant_id,
@@ -112,6 +128,7 @@ def list_modules(
             "core": item.core,
             "enabled": effective_enabled(db, user.tenant_id, item.key),
             "external_gate": EXTERNAL_GATED.get(item.key),
+            "external_ready": external_ready(item.key) if item.key in EXTERNAL_GATED else None,
         }
         for item in MODULES.values()
     ]
@@ -167,6 +184,14 @@ def set_module(
         raise HTTPException(status_code=404, detail="Módulo no registrado")
     if definition.core and not enabled:
         raise HTTPException(status_code=409, detail="Los módulos núcleo no se pueden desactivar")
+    if enabled and module_key in EXTERNAL_GATED and not external_ready(module_key):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Módulo '{module_key}' bloqueado hasta completar certificación: "
+                f"{EXTERNAL_GATED[module_key]}"
+            ),
+        )
     if enabled:
         ensure_dependencies(db, user.tenant_id, module_key)
     else:
