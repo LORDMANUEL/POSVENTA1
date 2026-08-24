@@ -13,8 +13,6 @@ from .services import AuditService
 
 module_router = APIRouter(prefix="/admin/modules", tags=["modules"])
 
-# Modules whose complete internal runtime can be enabled without pretending that an
-# external provider, physical device or fiscal homologation was certified.
 FULL_INTERNAL_PROFILE = (
     "purchasing",
     "delivery",
@@ -48,12 +46,7 @@ DEFAULT_ENABLED = frozenset(FULL_INTERNAL_PROFILE)
 
 
 def external_mode(key: str) -> str:
-    """Return deployment mode for an external-gated module.
-
-    `sandbox` is software-certification mode only; it is never equivalent to a
-    provider/physical certification. Production deployments should use
-    `certified` only after external evidence has been completed and documented.
-    """
+    """Return blocked, sandbox or certified for external module deployments."""
 
     if key not in EXTERNAL_GATED:
         return "internal"
@@ -72,7 +65,6 @@ def external_ready(key: str) -> bool:
 def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
     definition = MODULES[key]
     if not external_ready(key):
-        # Fail closed even if a stale/legacy tenant_modules row says enabled.
         return False
     row = db.scalar(
         select(TenantModule).where(
@@ -81,9 +73,6 @@ def effective_enabled(db: Session, tenant_id: str, key: str) -> bool:
         )
     )
     if row is None:
-        # A freshly installed store is operational immediately: all software-only
-        # modules that passed the stable gate are enabled by default. External-gated
-        # modules remain opt-in even in sandbox/certified deployments.
         return definition.core or key in DEFAULT_ENABLED
     return row.enabled
 
@@ -217,13 +206,17 @@ def set_module(
             )
 
     _set_enabled(db, user.tenant_id, module_key, enabled)
+    mode = external_mode(module_key)
     AuditService.record(
         db,
         user,
         "module.changed",
         "tenant_module",
         module_key,
-        {"enabled": enabled, "external_mode": external_mode(module_key)},
+        {"enabled": enabled, "external_mode": mode},
     )
     db.commit()
-    return {"key": module_key, "enabled": enabled, "external_mode": external_mode(module_key)}
+    response = {"key": module_key, "enabled": enabled}
+    if module_key in EXTERNAL_GATED:
+        response["external_mode"] = mode
+    return response
