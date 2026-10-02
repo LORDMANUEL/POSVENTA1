@@ -10,7 +10,7 @@
 </p>
 
 > [!IMPORTANT]
-> **Estado actual: candidata a estable `v0.12.1`.** Todavía no es una release estable publicada. La rama `stabilize/v0.12.1` solo debe fusionarse a `main` cuando CI, Stable Gate, instalación limpia, migración desde la versión anterior, Chromium/PWA, backup→restore y builds Windows terminen completamente en verde.
+> **Estado actual:** `v0.12.1` es la base estable promovida a `main`. El desarrollo posterior continúa en la rama `alpha` bajo la política **5 alphas → 1 beta; 3 betas → 1 estable**. Las integraciones externas solo se consideran certificadas cuando existe evidencia real.
 
 ## Qué es Mily Zebra
 
@@ -70,7 +70,7 @@ La portada SVG de este README conserva mientras tanto la paleta y dirección de 
 
 ---
 
-## Estado de `v0.12.1`
+## Estado de la estable `v0.12.1`
 
 | Área | Estado de la candidata | Criterio para estable |
 |---|---|---|

@@ -30,6 +30,7 @@ def main() -> int:
     backend = tomllib.loads((ROOT / "backend/pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     frontend = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))["version"]
     api = fastapi_version()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     versions = {
         "VERSION": expected,
@@ -42,6 +43,16 @@ def main() -> int:
         print(f"RELEASE_CONSISTENCY=FAIL expected={expected} values={versions}")
         return 1
 
+    stale_markers = [
+        f"candidata a estable `v{expected}`",
+        f"todavía no es una release estable publicada",
+    ]
+    stale = [marker for marker in stale_markers if marker.lower() in readme.lower()]
+    if stale and "-" not in expected:
+        print(f"RELEASE_DOCUMENTATION=FAIL stale_markers={stale}")
+        return 1
+
+    print("RELEASE_DOCUMENTATION=PASS")
     print(f"RELEASE_VERSION={expected}")
     print("RELEASE_CONSISTENCY=PASS")
     return 0
